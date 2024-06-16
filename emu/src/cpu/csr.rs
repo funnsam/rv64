@@ -1,5 +1,31 @@
 use super::Exception;
 
+// supervisor trap setup
+pub const CSR_SSTATUS: u64 = 0x100;
+pub const CSR_SIE: u64 = 0x104;
+pub const CSR_STVEC: u64 = 0x105;
+pub const CSR_SCOUNTEREN: u64 = 0x106;
+// supervisor configuration
+pub const CSR_SENVCFG: u64 = 0x10a;
+// supervisor counter setup
+pub const CSR_SCOUNTERINHIBIT: u64 = 0x120;
+// supervisor trap handling
+pub const CSR_SSCRATCH: u64 = 0x140;
+pub const CSR_SEPC: u64 = 0x141;
+pub const CSR_SCAUSE: u64 = 0x142;
+pub const CSR_STVAL: u64 = 0x143;
+pub const CSR_SIP: u64 = 0x144;
+pub const CSR_SCOUNTOVF: u64 = 0xda0;
+// supervisor protection & translation
+pub const CSR_SATP: u64 = 0x180;
+// debug/trace regiser
+pub const CSR_SCONTEXT: u64 = 0x5a8;
+// supervisor state enable regisers
+pub const CSR_SSTATEEN0: u64 = 0x10c;
+pub const CSR_SSTATEEN1: u64 = 0x10d;
+pub const CSR_SSTATEEN2: u64 = 0x10e;
+pub const CSR_SSTATEEN3: u64 = 0x10f;
+
 // machine info
 pub const CSR_MVENDORID: u64 = 0xf11;
 pub const CSR_MARCHID: u64 = 0xf12;
@@ -23,6 +49,10 @@ pub const CSR_MTINST: u64 = 0x345;
 pub const CSR_MTVAL2: u64 = 0x346;
 
 impl<'a> super::Cpu<'a> {
+    pub(super) fn csr_init(&mut self) {
+        self.csrs[CSR_MSTATUS as usize] = 0x0000_000a_0000_0000;
+    }
+
     pub(super) fn csr_read_cpu(&self, a: u64) -> u64 {
         unsafe { self._csr_read(a, false).unwrap_unchecked() }
     }
@@ -33,12 +63,13 @@ impl<'a> super::Cpu<'a> {
 
     fn _csr_read(&self, a: u64, err: bool) -> Result<u64, Exception> {
         let a = a & 4095;
-        println!("csrr {a:03x}");
+        println!("csrr {a:03x} {err}");
         self.check_csr_perm(a, err)?;
 
         Ok(match a {
             CSR_MISA => (2 << 62) | (1 << 8) | (1 << 12) | (1 << 18) /* | 1 << 5 | 1 << 3 */,
             CSR_MHARTID => 0,
+            CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS),
             _ => self.csrs[a as usize],
         })
     }
@@ -53,7 +84,7 @@ impl<'a> super::Cpu<'a> {
 
     fn _csr_write(&mut self, a: u64, d: u64, err: bool) -> Result<(), Exception> {
         let a = a & 4095;
-        println!("csrw {a:03x} {d:016x}");
+        println!("csrw {a:03x} {d:016x} {err}");
         self.check_csr_perm(a, err)?;
 
         if a >> 10 == 3 {
@@ -62,6 +93,11 @@ impl<'a> super::Cpu<'a> {
 
         match a {
             CSR_MISA => {},
+            CSR_MSTATUS => {
+                const MASK: u64 = 0x7fff_ffc0_fffe_19bf;
+                self.csrs[a as usize] &= !MASK;
+                self.csrs[a as usize] |= d & MASK;
+            }
             _ => self.csrs[a as usize] = d,
         }
 

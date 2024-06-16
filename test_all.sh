@@ -1,10 +1,10 @@
-#!/bin/sh
+#!/bin/bash
 
 cargo b -r || exit 1
 failed=()
 
 for f in "./tests/"*.bin; do
-    cargo r -r -- "$f" --testing || failed+=(" $f ($?)")
+    ./target/release/rv64 "$f" --testing || failed+=(" $f ($?)")
 done
 
 IFS=,

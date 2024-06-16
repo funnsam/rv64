@@ -14,7 +14,7 @@ pub struct Cpu<'a> {
 
 impl<'a> Cpu<'a> {
     pub fn new(bus: &'a mut bus::Bus<'a>, io: &'a mut io::Io) -> Self {
-        Self {
+        let mut cpu = Self {
             bus,
             io,
 
@@ -23,7 +23,9 @@ impl<'a> Cpu<'a> {
 
             csrs: Box::new([0; 4096]),
             mode: Mode::Machine,
-        }
+        };
+        cpu.csr_init();
+        cpu
     }
 
     fn step_w_exception(&mut self, testing: bool) -> Result<(), Exception> {
@@ -38,10 +40,13 @@ impl<'a> Cpu<'a> {
     }
 
     fn fetch(&mut self) -> Result<u32, Exception> {
-        let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
-        // println!("{:016x}", self.pc);
-        self.pc += 4;
-        i
+        if self.pc & 3 == 0 {
+            let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
+            self.pc += 4;
+            i
+        } else {
+            Err(Exception::InstAddrMisalign)
+        }
     }
 
     fn execute(&mut self, inst: u32, testing: bool) -> Result<(), Exception> {
@@ -110,7 +115,7 @@ impl<'a> Cpu<'a> {
                 match (inst >> 12) & 7 {
                     $(
                         $f3 => if $exec(r1, r2)? {
-                            self.pc += im - 4;
+                            self.write_pc(self.pc + im - 4)?;
                         },
                     )*
                     _ => return Err(Exception::IllegalInst),
@@ -162,8 +167,7 @@ impl<'a> Cpu<'a> {
             0x37 => exec!(u |a| Ok(a)),
             0x17 => exec!(u |a| Ok(self.pc + a - 4)),
             0x6f => exec!(j |a| {
-                let pc = self.pc;
-                Ok(core::mem::replace(&mut self.pc, pc + a - 4))
+                self.write_pc(self.pc + a - 4)
             }),
             0x63 => exec!(b [
                 0x0 |a, b| Ok(a == b),
@@ -240,7 +244,7 @@ impl<'a> Cpu<'a> {
                 0x7 0x01 |a: u64, b| Ok(a.checked_rem(b).unwrap_or(a)),
             ]),
             0x67 => exec!(i [
-                0x0 |a, b| Ok(core::mem::replace(&mut self.pc, (a + b) & !1)),
+                0x0 |a, b| self.write_pc((a + b) & !1),
             ]),
             0x1b => exec!(i [
                 0x0 |a, b| Ok((a + b) as i32 as u64),
@@ -330,16 +334,57 @@ impl<'a> Cpu<'a> {
 
                     Ok(Some(rv))
                 },
+                Supervisor 0x0 0x08 0x00 0x00 0x02 |_, _, _| { // sret
+                    let epc = self.csr_read_cpu(csr::CSR_SEPC);
+                    self.write_pc(epc)?;
+
+                    let mut mstat = self.csr_read_cpu(csr::CSR_MSTATUS);
+                    mstat &= !2;
+                    mstat |= (mstat >> 4) & 2; // sIE = sPIE
+
+                    let mode = Mode::from_code((mstat >> 11) & 3);
+
+                    mstat &= !0x20;
+                    mstat |= 1 << 5; // sPIE = 1
+
+                    mstat &= !0x100; // sPP = user
+
+                    if self.mode != mode {
+                        mstat &= !0x20000; // mPRV = 0
+                    }
+
+                    self.mode = mode;
+                    self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
+                    Ok(None)
+                },
                 Machine 0x0 0x18 0x00 0x00 0x02 |_, _, _| { // mret
                     let epc = self.csr_read_cpu(csr::CSR_MEPC);
-                    self.pc = epc;
+                    self.write_pc(epc)?;
+
+                    let mut mstat = self.csr_read_cpu(csr::CSR_MSTATUS);
+                    mstat &= !8;
+                    mstat |= (mstat >> 4) & 8; // mIE = mPIE
+
+                    let mode = Mode::from_code((mstat >> 11) & 3);
+
+                    mstat &= !0x80;
+                    mstat |= 1 << 7; // mPIE = 1
+
+                    mstat &= !0x1800; // mPP = user
+
+                    if self.mode != mode {
+                        mstat &= !0x20000; // mPRV = 0
+                    }
+
+                    self.mode = mode;
+                    self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
                     Ok(None)
                 },
                 User 0x0 0x00 0x00 0x00 0x00 |_, _, _| { // ecall
                     self.exception(self.mode.ecall_exception());
                     Ok(None)
                 },
-                User 0x0 0x00 0x00 0x00 0x01 |_, _, _| { // ecall
+                User 0x0 0x00 0x00 0x00 0x01 |_, _, _| { // ebreak
                     self.exception(Exception::Breakpoint);
                     Ok(None)
                 },
@@ -360,14 +405,27 @@ impl<'a> Cpu<'a> {
             },
             _ => 0,
         });
-        self.trap(cause as _);
+
+        self.trap(cause as _, csr::CSR_MEDELEG);
     }
 
     fn interrupt(&mut self, cause: Interrupt) {
-        self.trap(cause as u64 | (1 << 63));
+        self.trap(cause as u64 | (1 << 63), csr::CSR_MIDELEG);
     }
 
-    fn trap(&mut self, cause: u64) {
+    fn trap(&mut self, cause: u64, deleg: u64) {
+        let cause_bit = cause & 0x3f;
+        let deleg = self.csr_read_cpu(deleg);
+
+        if self.mode != Mode::Machine && (deleg >> cause_bit) & 1 == 1 {
+            self.supervisor_trap(cause);
+        } else {
+            self.machine_trap(cause);
+        }
+    }
+
+    fn machine_trap(&mut self, cause: u64) {
+        self.mode = Mode::Machine;
         self.csr_write_cpu(csr::CSR_MCAUSE, cause);
         self.csr_write_cpu(csr::CSR_MEPC, self.pc - 4);
 
@@ -377,8 +435,19 @@ impl<'a> Cpu<'a> {
             1 => self.pc = mtvec & !3 + 4 * cause & 0x7fff_ffff_ffff_ffff,
             _ => unimplemented!(),
         }
+    }
 
-        // TODO: switch mode
+    fn supervisor_trap(&mut self, cause: u64) {
+        self.mode = Mode::Supervisor;
+        self.csr_write_cpu(csr::CSR_SCAUSE, cause);
+        self.csr_write_cpu(csr::CSR_SEPC, self.pc - 4);
+
+        let stvec = self.csr_read_cpu(csr::CSR_STVEC);
+        match stvec & 3 {
+            0 => self.pc = stvec,
+            1 => self.pc = stvec & !3 + 4 * cause & 0x7fff_ffff_ffff_ffff,
+            _ => unimplemented!(),
+        }
     }
 
     fn read_reg(&self, r: usize) -> u64 {
@@ -387,6 +456,14 @@ impl<'a> Cpu<'a> {
 
     fn write_reg(&mut self, r: usize, v: u64) {
         if r != 0 { self.regs[r - 1] = v; }
+    }
+
+    fn write_pc(&mut self, v: u64) -> Result<u64, Exception> {
+        if v & 3 == 0 {
+            Ok(core::mem::replace(&mut self.pc, v))
+        } else {
+            Err(Exception::InstAddrMisalign)
+        }
     }
 }
 
@@ -405,6 +482,16 @@ impl Mode {
             Self::Supervisor => Exception::EcallFromSupervisor,
             Self::Hypervisor => Exception::EcallFromReserved,
             Self::Machine => Exception::EcallFromMachine,
+        }
+    }
+
+    fn from_code(c: u64) -> Self {
+        match c {
+            0 => Self::User,
+            1 => Self::Supervisor,
+            2 => Self::Hypervisor,
+            3 => Self::Machine,
+            _ => panic!(),
         }
     }
 }
