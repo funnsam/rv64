@@ -26,9 +26,9 @@ impl<'a> Cpu<'a> {
         }
     }
 
-    pub fn step(&mut self) {
+    pub fn step(&mut self, testing: bool) {
         let inst = self.fetch();
-        if let Err(ex) = self.execute(inst) {
+        if let Err(ex) = self.execute(inst, testing) {
             self.exception(ex);
         }
     }
@@ -39,7 +39,7 @@ impl<'a> Cpu<'a> {
         i
     }
 
-    fn execute(&mut self, inst: u32) -> Result<(), Exception> {
+    fn execute(&mut self, inst: u32, testing: bool) -> Result<(), Exception> {
         let opc = inst & 0x7f;
 
         macro_rules! exec {
@@ -181,7 +181,12 @@ impl<'a> Cpu<'a> {
                 0x0 |a, b, c| self.bus.store_u8(a + c, b as _),
                 0x1 |a, b, c| self.bus.store_u16(a + c, b as _),
                 0x2 |a, b, c| {
-                    println!("{:016x} {}", a + c, b);
+                    if testing && (a + c == 0x80001000 || a + c == 0x80002000) {
+                        std::process::exit((b - 1) as _);
+                    } else if testing {
+                        println!("{:016x} {}", a + c, b);
+                    }
+
                     self.bus.store_u32(a + c, b as _);
                 },
                 0x3 |a, b, c| self.bus.store_u64(a + c, b as _),
@@ -211,6 +216,23 @@ impl<'a> Cpu<'a> {
                 0x5 0x20 |a, b| ((a as i64) >> (b & 0x3f)) as u64,
                 0x6 0x00 |a, b| a | b,
                 0x7 0x00 |a, b| a & b,
+
+                0x0 0x01 |a, b| a * b,
+                0x1 0x01 |a, b| ((a as i64 as u128 * b as i64 as u128) >> 64) as u64,
+                0x2 0x01 |a, b| ((a as i64 as u128 * b as u128) >> 64) as u64,
+                0x3 0x01 |a, b| ((a as u128 * b as u128) >> 64) as u64,
+                0x4 0x01 |a, b| if b != 0 {
+                    (a as i64).wrapping_div(b as i64) as u64
+                } else {
+                    u64::MAX
+                },
+                0x5 0x01 |a: u64, b| a.checked_div(b).unwrap_or(u64::MAX),
+                0x6 0x01 |a, b| if b != 0 {
+                    (a as i64).wrapping_rem(b as i64) as u64
+                } else {
+                    a
+                },
+                0x7 0x01 |a: u64, b| a.checked_rem(b).unwrap_or(a),
             ]),
             0x67 => exec!(i [
                 0x0 |a, b| core::mem::replace(&mut self.pc, (a + b) & !1),
@@ -230,6 +252,20 @@ impl<'a> Cpu<'a> {
                 0x1 0x00 |a, b| (a << (b & 0x1f)) as i32 as u64,
                 0x5 0x00 |a, b| ((a as u32) >> (b & 0x1f)) as i32 as u64,
                 0x5 0x20 |a, b| ((a as i32) >> (b & 0x1f)) as u64,
+
+                0x0 0x01 |a, b| (a as i32 * b as i32) as u64,
+                0x4 0x01 |a, b| if b != 0 {
+                    (a as i32).wrapping_div(b as i32) as u64
+                } else {
+                    u64::MAX
+                },
+                0x5 0x01 |a: u64, b| (a as u32).checked_div(b as u32).map(|i| i as i32 as u64).unwrap_or(u64::MAX),
+                0x6 0x01 |a, b| if b != 0 {
+                    (a as i32).wrapping_rem(b as i32) as u64
+                } else {
+                    a
+                },
+                0x7 0x01 |a: u64, b| (a as u32).checked_rem(b as u32).unwrap_or(a as u32) as i32 as u64,
             ]),
             0x0f => {},
             0x73 => exec!(p [
