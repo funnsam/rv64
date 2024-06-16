@@ -39,6 +39,7 @@ impl<'a> Cpu<'a> {
 
     fn fetch(&mut self) -> Result<u32, Exception> {
         let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
+        // println!("{:016x}", self.pc);
         self.pc += 4;
         i
     }
@@ -185,8 +186,8 @@ impl<'a> Cpu<'a> {
                 0x0 |a, b, c| self.bus.store_u8(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
                 0x1 |a, b, c| self.bus.store_u16(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
                 0x2 |a, b, c| {
-                    if testing && (a + c == 0x80001000 || a + c == 0x80002000) {
-                        std::process::exit((b - 1) as _);
+                    if testing && (a + c == 0x80001004 || a + c == 0x80002004) && b == 0 {
+                        std::process::exit(self.bus.load_u32(a + c - 4).unwrap() as i32 - 1);
                     } else if testing {
                         println!("{:016x} {}", a + c, b);
                     }
@@ -338,6 +339,10 @@ impl<'a> Cpu<'a> {
                     self.exception(self.mode.ecall_exception());
                     Ok(None)
                 },
+                User 0x0 0x00 0x00 0x00 0x01 |_, _, _| { // ecall
+                    self.exception(Exception::Breakpoint);
+                    Ok(None)
+                },
             ]),
             _ => return Err(Exception::IllegalInst),
         }
@@ -346,6 +351,15 @@ impl<'a> Cpu<'a> {
     }
 
     fn exception(&mut self, cause: Exception) {
+        println!("{cause:?} {:016x}", self.pc);
+        self.csr_write_cpu(csr::CSR_MTVAL, match cause {
+            Exception::IllegalInst => {
+                let i = self.bus.load_u32(self.pc - 4).unwrap_or(0);
+                println!("{i:08x}");
+                i as _
+            },
+            _ => 0,
+        });
         self.trap(cause as _);
     }
 
@@ -355,8 +369,15 @@ impl<'a> Cpu<'a> {
 
     fn trap(&mut self, cause: u64) {
         self.csr_write_cpu(csr::CSR_MCAUSE, cause);
-        self.csr_write_cpu(csr::CSR_MEPC, self.pc);
-        self.pc = self.csr_read_cpu(csr::CSR_MTVEC); // TODO: mtvec modes
+        self.csr_write_cpu(csr::CSR_MEPC, self.pc - 4);
+
+        let mtvec = self.csr_read_cpu(csr::CSR_MTVEC);
+        match mtvec & 3 {
+            0 => self.pc = mtvec,
+            1 => self.pc = mtvec & !3 + 4 * cause & 0x7fff_ffff_ffff_ffff,
+            _ => unimplemented!(),
+        }
+
         // TODO: switch mode
     }
 
@@ -388,6 +409,7 @@ impl Mode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Exception {
     InstAddrMisalign = 0,
     InstAccessFault = 1,
@@ -410,6 +432,7 @@ enum Exception {
     HardwareError = 19,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Interrupt {
     SupervisorSoftwareInt = 1,
     MachineSoftwareInt = 3,

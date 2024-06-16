@@ -1,0 +1,7 @@
+satp
+pmpaddr0
+pmpcfg0
+mie
+medeleg
+mideleg
+mstatus
