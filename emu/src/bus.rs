@@ -11,14 +11,23 @@ impl<'a> Bus<'a> {
 macro_rules! gen {
     ($l: tt $s: tt $t: tt $sz: tt) => {
         impl Bus<'_> {
-            pub fn $l(&self, addr: u64) -> $t {
+            pub fn $l(&self, addr: u64) -> Result<$t, ()> {
                 let start = addr - 0x80000000;
-                $t::from_le_bytes(self.ram[start as usize..start as usize + $sz].try_into().unwrap())
+                if start + $sz < self.ram.len() as u64 {
+                    Ok($t::from_le_bytes(self.ram[start as usize..start as usize + $sz].try_into().unwrap()))
+                } else {
+                    Err(())
+                }
             }
 
-            pub fn $s(&mut self, addr: u64, val: $t) {
+            pub fn $s(&mut self, addr: u64, val: $t) -> Result<(), ()> {
                 let start = addr - 0x80000000;
-                self.ram[start as usize..start as usize + $sz].copy_from_slice(&val.to_le_bytes());
+                if start + $sz < self.ram.len() as u64 {
+                    self.ram[start as usize..start as usize + $sz].copy_from_slice(&val.to_le_bytes());
+                    Ok(())
+                } else {
+                    Err(())
+                }
             }
         }
     };

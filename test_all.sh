@@ -2,6 +2,6 @@
 
 set -e
 
-for f in "./tests/"*; do
+for f in "./tests/"*.bin; do
     cargo r -r -- "$f" --testing
 done

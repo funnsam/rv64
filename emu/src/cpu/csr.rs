@@ -36,7 +36,7 @@ impl<'a> super::Cpu<'a> {
         self.check_csr_perm(a, err)?;
 
         Ok(match a {
-            CSR_MISA => 2 << 62 | 1 << 8,
+            CSR_MISA => 2 << 62 | 1 << 8 | 1 << 12 /* | 1 << 18 | 1 << 5 | 1 << 3 */,
             CSR_MHARTID => 0,
             _ => self.csrs[a as usize],
         })

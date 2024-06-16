@@ -26,15 +26,19 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    fn step_w_exception(&mut self, testing: bool) -> Result<(), Exception> {
+        let inst = self.fetch()?;
+        self.execute(inst, testing)
+    }
+
     pub fn step(&mut self, testing: bool) {
-        let inst = self.fetch();
-        if let Err(ex) = self.execute(inst, testing) {
+        if let Err(ex) = self.step_w_exception(testing) {
             self.exception(ex);
         }
     }
 
-    fn fetch(&mut self) -> u32 {
-        let i = self.bus.load_u32(self.pc);
+    fn fetch(&mut self) -> Result<u32, Exception> {
+        let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
         self.pc += 4;
         i
     }
@@ -52,9 +56,9 @@ impl<'a> Cpu<'a> {
 
                 let v = match ((inst >> 12) & 7, inst >> 25) {
                     $(
-                        ($f3, $f7) => $exec(r1, r2),
+                        ($f3, $f7) => $exec(r1, r2)?,
                     )*
-                    (f3, f7) => todo!("r {inst:08x} {opc:02x} {f3:01x} {f7:02x}"),
+                    _ => return Err(Exception::IllegalInst),
                 };
 
                 self.write_reg(rd as _, v);
@@ -71,10 +75,10 @@ impl<'a> Cpu<'a> {
                     $(
                         $f3 => {
                             let rs_v = if $im { rs as _ } else { self.read_reg(rs as _) };
-                            $exec(rs_v, im, rd, rs)
+                            $exec(rs_v, im, rd, rs)?
                         },
                     )*
-                    f3 => todo!("{inst:08x} i {opc:02x} {f3:01x}"),
+                    _ => return Err(Exception::IllegalInst),
                 };
 
                 self.write_reg(rd as _, v);
@@ -88,9 +92,9 @@ impl<'a> Cpu<'a> {
                     | ((inst >> 7) & 0x1f) as u64; // [4:0]
                 match (inst >> 12) & 7 {
                     $(
-                        $f3 => $exec(r1, r2, im),
+                        $f3 => $exec(r1, r2, im)?,
                     )*
-                    f3 => todo!("{inst:08x} s {opc:02x} {f3:01x}"),
+                    _ => return Err(Exception::IllegalInst),
                 };
             }};
             (b [$($f3: tt $exec: expr),* $(,)?]) => {{
@@ -104,17 +108,17 @@ impl<'a> Cpu<'a> {
                     | ((inst >> 7) & 0x1e) as u64; // [4:1]
                 match (inst >> 12) & 7 {
                     $(
-                        $f3 => if $exec(r1, r2) {
+                        $f3 => if $exec(r1, r2)? {
                             self.pc += im - 4;
                         },
                     )*
-                    f3 => todo!("{inst:08x} b {opc:02x} {f3:01x}"),
+                    _ => return Err(Exception::IllegalInst),
                 };
             }};
             (u $exec: expr) => {{
                 let im = (inst & 0xFFFF_F000) as i32 as u64;
                 let rd = (inst >> 7) & 0x1f;
-                let v = $exec(im);
+                let v = $exec(im)?;
                 self.write_reg(rd as _, v);
             }};
             (j $exec: expr) => {{
@@ -123,7 +127,7 @@ impl<'a> Cpu<'a> {
                     | ((inst >> 9) & 0x800) as u64 // [11]
                     | ((inst >> 20) & 0x7fe) as u64; // [10:1]
                 let rd = (inst >> 7) & 0x1f;
-                let v = $exec(im);
+                let v = $exec(im)?;
                 self.write_reg(rd as _, v);
             }};
             (p [$($priv: tt $f3: tt $f7: tt $rds: tt $r1s: tt $r2s: tt $exec: expr),* $(,)?]) => {{
@@ -144,7 +148,7 @@ impl<'a> Cpu<'a> {
                             $exec(r1, r2, im)?
                         },
                     )*
-                    _ => todo!("p {inst:08x} {opc:02x}"),
+                    _ => return Err(Exception::IllegalInst),
                 };
 
                 if let Some(v) = v {
@@ -154,32 +158,32 @@ impl<'a> Cpu<'a> {
         }
 
         match opc {
-            0x37 => exec!(u |a| a),
-            0x17 => exec!(u |a| self.pc + a - 4),
+            0x37 => exec!(u |a| Ok(a)),
+            0x17 => exec!(u |a| Ok(self.pc + a - 4)),
             0x6f => exec!(j |a| {
                 let pc = self.pc;
-                core::mem::replace(&mut self.pc, pc + a - 4)
+                Ok(core::mem::replace(&mut self.pc, pc + a - 4))
             }),
             0x63 => exec!(b [
-                0x0 |a, b| a == b,
-                0x1 |a, b| a != b,
-                0x4 |a, b| (a as i64) < (b as i64),
-                0x5 |a, b| (a as i64) >= (b as i64),
-                0x6 |a, b| a < b,
-                0x7 |a, b| a >= b,
+                0x0 |a, b| Ok(a == b),
+                0x1 |a, b| Ok(a != b),
+                0x4 |a, b| Ok((a as i64) < (b as i64)),
+                0x5 |a, b| Ok((a as i64) >= (b as i64)),
+                0x6 |a, b| Ok(a < b),
+                0x7 |a, b| Ok(a >= b),
             ]),
             0x03 => exec!(i [
-                0x0 |a, b| self.bus.load_u8(a + b) as i8 as u64,
-                0x1 |a, b| self.bus.load_u16(a + b) as i16 as u64,
-                0x2 |a, b| self.bus.load_u32(a + b) as i32 as u64,
-                0x3 |a, b| self.bus.load_u64(a + b),
-                0x4 |a, b| self.bus.load_u8(a + b) as u64,
-                0x5 |a, b| self.bus.load_u16(a + b) as u64,
-                0x6 |a, b| self.bus.load_u32(a + b) as u64,
+                0x0 |a, b| Ok(self.bus.load_u8(a + b).map_err(|_| Exception::LoadAccessFault)? as i8 as u64),
+                0x1 |a, b| Ok(self.bus.load_u16(a + b).map_err(|_| Exception::LoadAccessFault)? as i16 as u64),
+                0x2 |a, b| Ok(self.bus.load_u32(a + b).map_err(|_| Exception::LoadAccessFault)? as i32 as u64),
+                0x3 |a, b| Ok(self.bus.load_u64(a + b).map_err(|_| Exception::LoadAccessFault)?),
+                0x4 |a, b| Ok(self.bus.load_u8(a + b).map_err(|_| Exception::LoadAccessFault)? as u64),
+                0x5 |a, b| Ok(self.bus.load_u16(a + b).map_err(|_| Exception::LoadAccessFault)? as u64),
+                0x6 |a, b| Ok(self.bus.load_u32(a + b).map_err(|_| Exception::LoadAccessFault)? as u64),
             ]),
             0x23 => exec!(s [
-                0x0 |a, b, c| self.bus.store_u8(a + c, b as _),
-                0x1 |a, b, c| self.bus.store_u16(a + c, b as _),
+                0x0 |a, b, c| self.bus.store_u8(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
+                0x1 |a, b, c| self.bus.store_u16(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
                 0x2 |a, b, c| {
                     if testing && (a + c == 0x80001000 || a + c == 0x80002000) {
                         std::process::exit((b - 1) as _);
@@ -187,85 +191,85 @@ impl<'a> Cpu<'a> {
                         println!("{:016x} {}", a + c, b);
                     }
 
-                    self.bus.store_u32(a + c, b as _);
+                    self.bus.store_u32(a + c, b as _).map_err(|_| Exception::StoreAccessFault)
                 },
-                0x3 |a, b, c| self.bus.store_u64(a + c, b as _),
+                0x3 |a, b, c| self.bus.store_u64(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
             ]),
             0x13 => exec!(i [
-                0x0 |a, b| a + b,
-                0x2 |a, b| ((a as i64) < (b as i64)) as u64,
-                0x3 |a, b| (a < b) as u64,
-                0x4 |a, b| a ^ b,
-                0x6 |a, b| a | b,
-                0x7 |a, b| a & b,
-                0x1 |a, b| a << (b & 0x3f),
-                0x5 |a, b| if b >> 6 == 0_u64 {
+                0x0 |a, b| Ok(a + b),
+                0x2 |a, b| Ok(((a as i64) < (b as i64)) as u64),
+                0x3 |a, b| Ok((a < b) as u64),
+                0x4 |a, b| Ok(a ^ b),
+                0x6 |a, b| Ok(a | b),
+                0x7 |a, b| Ok(a & b),
+                0x1 |a, b| Ok(a << (b & 0x3f)),
+                0x5 |a, b| Ok(if b >> 6 == 0_u64 {
                     a >> (b & 0x3f)
                 } else {
                     ((a as i64) >> (b & 0x3f)) as u64
-                },
+                }),
             ]),
             0x33 => exec!(r [
-                0x0 0x00 |a, b| a + b,
-                0x0 0x20 |a, b| a - b,
-                0x1 0x00 |a, b| a << (b & 0x3f),
-                0x2 0x00 |a, b| ((a as i64) < (b as i64)) as u64,
-                0x3 0x00 |a, b| (a < b) as u64,
-                0x4 0x00 |a, b| a ^ b,
-                0x5 0x00 |a, b| a >> (b & 0x3f),
-                0x5 0x20 |a, b| ((a as i64) >> (b & 0x3f)) as u64,
-                0x6 0x00 |a, b| a | b,
-                0x7 0x00 |a, b| a & b,
+                0x0 0x00 |a, b| Ok(a + b),
+                0x0 0x20 |a, b| Ok(a - b),
+                0x1 0x00 |a, b| Ok(a << (b & 0x3f)),
+                0x2 0x00 |a, b| Ok(((a as i64) < (b as i64)) as u64),
+                0x3 0x00 |a, b| Ok((a < b) as u64),
+                0x4 0x00 |a, b| Ok(a ^ b),
+                0x5 0x00 |a, b| Ok(a >> (b & 0x3f)),
+                0x5 0x20 |a, b| Ok(((a as i64) >> (b & 0x3f)) as u64),
+                0x6 0x00 |a, b| Ok(a | b),
+                0x7 0x00 |a, b| Ok(a & b),
 
-                0x0 0x01 |a, b| a * b,
-                0x1 0x01 |a, b| ((a as i64 as u128 * b as i64 as u128) >> 64) as u64,
-                0x2 0x01 |a, b| ((a as i64 as u128 * b as u128) >> 64) as u64,
-                0x3 0x01 |a, b| ((a as u128 * b as u128) >> 64) as u64,
-                0x4 0x01 |a, b| if b != 0 {
+                0x0 0x01 |a, b| Ok(a * b),
+                0x1 0x01 |a, b| Ok(((a as i64 as u128 * b as i64 as u128) >> 64) as u64),
+                0x2 0x01 |a, b| Ok(((a as i64 as u128 * b as u128) >> 64) as u64),
+                0x3 0x01 |a, b| Ok(((a as u128 * b as u128) >> 64) as u64),
+                0x4 0x01 |a, b| Ok(if b != 0 {
                     (a as i64).wrapping_div(b as i64) as u64
                 } else {
                     u64::MAX
-                },
-                0x5 0x01 |a: u64, b| a.checked_div(b).unwrap_or(u64::MAX),
-                0x6 0x01 |a, b| if b != 0 {
+                }),
+                0x5 0x01 |a: u64, b| Ok(a.checked_div(b).unwrap_or(u64::MAX)),
+                0x6 0x01 |a, b| Ok(if b != 0 {
                     (a as i64).wrapping_rem(b as i64) as u64
                 } else {
                     a
-                },
-                0x7 0x01 |a: u64, b| a.checked_rem(b).unwrap_or(a),
+                }),
+                0x7 0x01 |a: u64, b| Ok(a.checked_rem(b).unwrap_or(a)),
             ]),
             0x67 => exec!(i [
-                0x0 |a, b| core::mem::replace(&mut self.pc, (a + b) & !1),
+                0x0 |a, b| Ok(core::mem::replace(&mut self.pc, (a + b) & !1)),
             ]),
             0x1b => exec!(i [
-                0x0 |a, b| (a + b) as i32 as u64,
-                0x1 |a, b| (a << (b & 0x1f)) as i32 as u64,
-                0x5 |a, b| if b >> 6 == 0_u64 {
+                0x0 |a, b| Ok((a + b) as i32 as u64),
+                0x1 |a, b| Ok((a << (b & 0x1f)) as i32 as u64),
+                0x5 |a, b| Ok(if b >> 6 == 0_u64 {
                     ((a as u32) >> (b & 0x1f)) as i32 as u64
                 } else {
                     ((a as i32) >> (b & 0x1f)) as u64
-                },
+                }),
             ]),
             0x3b => exec!(r [
-                0x0 0x00 |a, b| (a + b) as i32 as u64,
-                0x0 0x20 |a, b| (a - b) as i32 as u64,
-                0x1 0x00 |a, b| (a << (b & 0x1f)) as i32 as u64,
-                0x5 0x00 |a, b| ((a as u32) >> (b & 0x1f)) as i32 as u64,
-                0x5 0x20 |a, b| ((a as i32) >> (b & 0x1f)) as u64,
+                0x0 0x00 |a, b| Ok((a + b) as i32 as u64),
+                0x0 0x20 |a, b| Ok((a - b) as i32 as u64),
+                0x1 0x00 |a, b| Ok((a << (b & 0x1f)) as i32 as u64),
+                0x5 0x00 |a, b| Ok(((a as u32) >> (b & 0x1f)) as i32 as u64),
+                0x5 0x20 |a, b| Ok(((a as i32) >> (b & 0x1f)) as u64),
 
-                0x0 0x01 |a, b| (a as i32 * b as i32) as u64,
-                0x4 0x01 |a, b| if b != 0 {
+                0x0 0x01 |a, b| Ok((a as i32 * b as i32) as u64),
+                0x4 0x01 |a, b| Ok(if b != 0 {
                     (a as i32).wrapping_div(b as i32) as u64
                 } else {
                     u64::MAX
-                },
-                0x5 0x01 |a: u64, b| (a as u32).checked_div(b as u32).map(|i| i as i32 as u64).unwrap_or(u64::MAX),
-                0x6 0x01 |a, b| if b != 0 {
+                }),
+                0x5 0x01 |a: u64, b| Ok((a as u32).checked_div(b as u32).map(|i| i as i32 as u64).unwrap_or(u64::MAX)),
+                0x6 0x01 |a, b| Ok(if b != 0 {
                     (a as i32).wrapping_rem(b as i32) as u64
                 } else {
                     a
-                },
-                0x7 0x01 |a: u64, b| (a as u32).checked_rem(b as u32).unwrap_or(a as u32) as i32 as u64,
+                }),
+                0x7 0x01 |a: u64, b| Ok((a as u32).checked_rem(b as u32).unwrap_or(a as u32) as i32 as u64),
             ]),
             0x0f => {},
             0x73 => exec!(p [
@@ -307,8 +311,24 @@ impl<'a> Cpu<'a> {
 
                     Ok(Some(rv))
                 },
-                // 0x3 false |a, b, dr, sr| 0, // csrrc
-                // 0x7 true |a, b, dr, sr| 0, // csrrci
+                User 0x3 _ _ sr _ |a: u64, _, b| { // csrrc
+                    let rv = self.csr_read(b)?;
+
+                    if sr != 0 {
+                        self.csr_write(b, !a & rv)?;
+                    }
+
+                    Ok(Some(rv))
+                },
+                User 0x7 _ _ a _ |_, _, b| { // csrrci
+                    let rv = self.csr_read(b)?;
+
+                    if a != 0 {
+                        self.csr_write(b, !(a as u64) & rv)?;
+                    }
+
+                    Ok(Some(rv))
+                },
                 Machine 0x0 0x18 0x00 0x00 0x02 |_, _, _| { // mret
                     let epc = self.csr_read_cpu(csr::CSR_MEPC);
                     self.pc = epc;
@@ -319,7 +339,7 @@ impl<'a> Cpu<'a> {
                     Ok(None)
                 },
             ]),
-            _ => todo!("{inst:08x} {opc:02x}"),
+            _ => return Err(Exception::IllegalInst),
         }
 
         Ok(())
