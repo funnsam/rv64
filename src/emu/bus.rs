@@ -12,11 +12,13 @@ macro_rules! gen {
     ($l: tt $s: tt $t: tt $sz: tt) => {
         impl Bus<'_> {
             pub fn $l(&self, addr: u64) -> $t {
-                $t::from_le_bytes(self.ram[addr as usize..addr as usize + $sz].try_into().unwrap())
+                let start = addr - 0x80000000;
+                $t::from_le_bytes(self.ram[start as usize..start as usize + $sz].try_into().unwrap())
             }
 
             pub fn $s(&mut self, addr: u64, val: $t) {
-                self.ram[addr as usize..addr as usize + $sz].copy_from_slice(&val.to_le_bytes());
+                let start = addr - 0x80000000;
+                self.ram[start as usize..start as usize + $sz].copy_from_slice(&val.to_le_bytes());
             }
         }
     };
