@@ -42,7 +42,7 @@ impl<'a> Cpu<'a> {
     }
 
     fn fetch(&mut self) -> Result<u32, Exception> {
-        // println!("{:08x}", self.pc);
+        println!("{:08x}", self.pc);
         if self.pc & 3 == 0 {
             let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
             self.pc += 4;
@@ -345,7 +345,7 @@ impl<'a> Cpu<'a> {
                     mstat &= !2;
                     mstat |= (mstat >> 4) & 2; // sIE = sPIE
 
-                    let mode = Mode::from_code((mstat >> 11) & 3);
+                    let mode = Mode::from_code((mstat >> 8) & 1);
 
                     mstat &= !0x20;
                     mstat |= 1 << 5; // sPIE = 1
@@ -403,16 +403,21 @@ impl<'a> Cpu<'a> {
 
     fn exception(&mut self, cause: Exception) {
         println!("{cause:?} {:016x}", self.pc);
-        self.csr_write_cpu(csr::CSR_MTVAL, match cause {
+        let epc = self.pc;
+        let tval = if self.trap(cause as _, csr::CSR_MEDELEG) {
+            csr::CSR_MTVAL
+        } else {
+            csr::CSR_STVAL
+        };
+
+        self.csr_write_cpu(tval, match cause {
             Exception::IllegalInst => {
-                let i = self.bus.load_u32(self.pc - 4).unwrap_or(0);
+                let i = self.bus.load_u32(epc - 4).unwrap_or(0);
                 println!("{i:08x}");
                 i as _
             },
             _ => 0,
         });
-
-        self.trap(cause as _, csr::CSR_MEDELEG);
     }
 
     fn interrupt(&mut self, cause: u64) {
@@ -420,14 +425,16 @@ impl<'a> Cpu<'a> {
         self.trap(cause | (1 << 63), csr::CSR_MIDELEG);
     }
 
-    fn trap(&mut self, cause: u64, deleg: u64) {
+    fn trap(&mut self, cause: u64, deleg: u64) -> bool {
         let cause_bit = cause & 0x3f;
         let deleg = self.csr_read_cpu(deleg);
 
         if self.mode != Mode::Machine && (deleg >> cause_bit) & 1 == 1 {
             self.supervisor_trap(cause);
+            false
         } else {
             self.machine_trap(cause);
+            true
         }
     }
 
