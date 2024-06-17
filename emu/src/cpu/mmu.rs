@@ -29,7 +29,7 @@ impl<'a> Cpu<'a> {
                         // TODO: check priv
 
                         // misaligned
-                        if i > 0 && pte >> 10 & ((1 << (i - 1)) - 1) != 0 {
+                        if i > 0 && (pte >> 10) & ((1 << (i - 1)) - 1) != 0 {
                             return Err(());
                         }
 
