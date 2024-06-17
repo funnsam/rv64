@@ -338,6 +338,10 @@ impl<'a> Cpu<'a> {
                     Ok(Some(rv))
                 },
                 Supervisor 0x0 0x08 0x00 0x00 0x02 |_, _, _| { // sret
+                    if (self.csr_read_cpu(csr::CSR_MSTATUS) >> 22) & 1 == 1 {
+                        return Err(Exception::IllegalInst);
+                    }
+
                     let epc = self.csr_read_cpu(csr::CSR_SEPC);
                     self.write_pc(epc)?;
 
@@ -394,6 +398,13 @@ impl<'a> Cpu<'a> {
                     Ok(None)
                 },
                 User 0x0 0x08 0x00 0x00 0x05 |_, _, _| Ok(None), // wfi
+                Supervisor 0x0 0x09 0x00 _ _ |_, _, _| { // sfence.vma
+                    if (self.csr_read_cpu(csr::CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == Mode::Supervisor {
+                        return Err(Exception::IllegalInst);
+                    }
+
+                    Ok(None)
+                },
             ]),
             _ => return Err(Exception::IllegalInst),
         }

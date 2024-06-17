@@ -49,6 +49,9 @@ pub const CSR_MIP: u64 = 0x344;
 pub const CSR_MTINST: u64 = 0x345;
 pub const CSR_MTVAL2: u64 = 0x346;
 
+const MSTAT_S_MASK: u64 = 0x8000_0003_000f_e7e2;
+const MSTAT_W_MASK: u64 = 0x7fff_ffc0_fff2_19bf;
+
 impl<'a> super::Cpu<'a> {
     pub(super) fn csr_init(&mut self) {
         self.csrs[CSR_MSTATUS as usize] = 0x0000_000a_0000_0000;
@@ -70,7 +73,14 @@ impl<'a> super::Cpu<'a> {
         Ok(match a {
             CSR_MISA => (2 << 62) | (1 << 8) | (1 << 12) | (1 << 18) /* | 1 << 5 | 1 << 3 */,
             CSR_MHARTID => 0,
-            CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS),
+            CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS) & MSTAT_S_MASK,
+            CSR_SATP => {
+                if (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == super::Mode::Supervisor && err {
+                    return Err(Exception::IllegalInst);
+                }
+
+                self.csrs[a as usize]
+            }
             0x7a0 | 0x7a5 => 1,
             _ => self.csrs[a as usize],
         })
@@ -96,10 +106,26 @@ impl<'a> super::Cpu<'a> {
         match a {
             CSR_MISA => {},
             CSR_MSTATUS => {
-                const MASK: u64 = 0x7fff_ffc0_fffe_19bf;
-                self.csrs[a as usize] &= !MASK;
-                self.csrs[a as usize] |= d & MASK;
+                self.csrs[a as usize] &= !MSTAT_W_MASK;
+                self.csrs[a as usize] |= d & MSTAT_W_MASK;
             },
+            CSR_SSTATUS => {
+                const MASK: u64 = MSTAT_S_MASK & MSTAT_W_MASK;
+
+                let mut mstat = self.csr_read_cpu(CSR_MSTATUS);
+                println!("{mstat:016x}");
+                mstat &= !MASK;
+                mstat |= d & MASK;
+                self.csr_write_cpu(CSR_MSTATUS, mstat);
+                println!("{mstat:016x}");
+            },
+            CSR_SATP => {
+                if (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == super::Mode::Supervisor && err {
+                    return Err(Exception::IllegalInst);
+                }
+
+                self.csrs[a as usize] = d;
+            }
             _ => self.csrs[a as usize] = d,
         }
 
