@@ -30,7 +30,9 @@ impl<'a> Cpu<'a> {
 
     fn step_w_exception(&mut self, testing: bool) -> Result<(), Exception> {
         let inst = self.fetch()?;
-        self.execute(inst, testing)
+        self.execute(inst, testing)?;
+        self.check_interrupts();
+        Ok(())
     }
 
     pub fn step(&mut self, testing: bool) {
@@ -40,6 +42,7 @@ impl<'a> Cpu<'a> {
     }
 
     fn fetch(&mut self) -> Result<u32, Exception> {
+        // println!("{:08x}", self.pc);
         if self.pc & 3 == 0 {
             let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
             self.pc += 4;
@@ -354,6 +357,7 @@ impl<'a> Cpu<'a> {
                     }
 
                     self.mode = mode;
+                    println!("{:?}", self.mode);
                     self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
                     Ok(None)
                 },
@@ -377,6 +381,7 @@ impl<'a> Cpu<'a> {
                     }
 
                     self.mode = mode;
+                    println!("{:?}", self.mode);
                     self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
                     Ok(None)
                 },
@@ -388,6 +393,7 @@ impl<'a> Cpu<'a> {
                     self.exception(Exception::Breakpoint);
                     Ok(None)
                 },
+                User 0x0 0x08 0x00 0x00 0x05 |_, _, _| Ok(None), // wfi
             ]),
             _ => return Err(Exception::IllegalInst),
         }
@@ -409,8 +415,9 @@ impl<'a> Cpu<'a> {
         self.trap(cause as _, csr::CSR_MEDELEG);
     }
 
-    fn interrupt(&mut self, cause: Interrupt) {
-        self.trap(cause as u64 | (1 << 63), csr::CSR_MIDELEG);
+    fn interrupt(&mut self, cause: u64) {
+        println!("{cause} {:016x}", self.pc);
+        self.trap(cause | (1 << 63), csr::CSR_MIDELEG);
     }
 
     fn trap(&mut self, cause: u64, deleg: u64) {
@@ -424,29 +431,72 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    fn mtvec_jump(&mut self, mtvec: u64, cause: u64) {
+        let pc = match mtvec & 3 {
+            0 => mtvec,
+            1 => (mtvec & !3) + 4 * (cause & 0x7fff_ffff_ffff_ffff),
+            _ => unimplemented!(),
+        };
+        self.pc = pc;
+
+        println!("{mtvec:016x} {pc:016x}");
+    }
+
     fn machine_trap(&mut self, cause: u64) {
-        self.mode = Mode::Machine;
         self.csr_write_cpu(csr::CSR_MCAUSE, cause);
         self.csr_write_cpu(csr::CSR_MEPC, self.pc - 4);
 
+        let mut mstat = self.csr_read_cpu(csr::CSR_MSTATUS);
+        mstat &= !0x1880;
+        mstat |= (mstat & 8) << 4;
+        mstat &= !8;
+        mstat |= (self.mode as u64) << 11;
+        self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
+
         let mtvec = self.csr_read_cpu(csr::CSR_MTVEC);
-        match mtvec & 3 {
-            0 => self.pc = mtvec,
-            1 => self.pc = mtvec & !3 + 4 * cause & 0x7fff_ffff_ffff_ffff,
-            _ => unimplemented!(),
-        }
+        self.mtvec_jump(mtvec, cause);
+        self.mode = Mode::Machine;
+        println!("{:?}", self.mode);
     }
 
     fn supervisor_trap(&mut self, cause: u64) {
-        self.mode = Mode::Supervisor;
         self.csr_write_cpu(csr::CSR_SCAUSE, cause);
         self.csr_write_cpu(csr::CSR_SEPC, self.pc - 4);
 
+        let mut mstat = self.csr_read_cpu(csr::CSR_MSTATUS);
+        mstat &= !0x120;
+        mstat |= (mstat & 2) << 4;
+        mstat &= !2;
+        mstat |= (self.mode as u64) << 8;
+        self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
+
         let stvec = self.csr_read_cpu(csr::CSR_STVEC);
-        match stvec & 3 {
-            0 => self.pc = stvec,
-            1 => self.pc = stvec & !3 + 4 * cause & 0x7fff_ffff_ffff_ffff,
-            _ => unimplemented!(),
+        self.mtvec_jump(stvec, cause);
+        self.mode = Mode::Supervisor;
+        println!("{:?}", self.mode);
+    }
+
+    fn check_interrupts(&mut self) {
+        const CHECK_LIST: &[usize] = &[13, 11, 7, 3, 9, 5, 1];
+
+        let mut mip = self.csr_read_cpu(csr::CSR_MIP);
+        let mut mie = self.csr_read_cpu(csr::CSR_MIE);
+        let mstat_mie = (self.csr_read_cpu(csr::CSR_MSTATUS) >> 3) & 1 == 1;
+        let delg = self.csr_read_cpu(csr::CSR_MIDELEG);
+
+        for b in CHECK_LIST.into_iter() {
+            let p = (mip >> b) & 1 == 1;
+            let e = (mie >> b) & 1 == 1;
+            let delg = (delg >> b) & 1 == 1;
+
+            if ((self.mode == Mode::Machine && mstat_mie) || self.mode < Mode::Machine) && (p && e) && !delg {
+                self.interrupt(*b as _);
+                mip ^= 1 << b;
+                mie = 0;
+                self.csr_write_cpu(csr::CSR_MIP, mip);
+                self.csr_write_cpu(csr::CSR_MIE, mie);
+                break;
+            }
         }
     }
 

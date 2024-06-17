@@ -37,6 +37,7 @@ pub const CSR_MSTATUS: u64 = 0x300;
 pub const CSR_MISA: u64 = 0x301;
 pub const CSR_MEDELEG: u64 = 0x302;
 pub const CSR_MIDELEG: u64 = 0x303;
+pub const CSR_MIE: u64 = 0x304;
 pub const CSR_MTVEC: u64 = 0x305;
 pub const CSR_MCOUNTEREN: u64 = 0x306;
 // machine trap handling
@@ -58,18 +59,19 @@ impl<'a> super::Cpu<'a> {
     }
 
     pub(super) fn csr_read(&self, a: u64) -> Result<u64, Exception> {
+        println!("csrr {a:03x}");
         self._csr_read(a, true)
     }
 
     fn _csr_read(&self, a: u64, err: bool) -> Result<u64, Exception> {
         let a = a & 4095;
-        println!("csrr {a:03x} {err}");
         self.check_csr_perm(a, err)?;
 
         Ok(match a {
             CSR_MISA => (2 << 62) | (1 << 8) | (1 << 12) | (1 << 18) /* | 1 << 5 | 1 << 3 */,
             CSR_MHARTID => 0,
             CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS),
+            0x7a0 | 0x7a5 => 1,
             _ => self.csrs[a as usize],
         })
     }
@@ -79,16 +81,16 @@ impl<'a> super::Cpu<'a> {
     }
 
     pub(super) fn csr_write(&mut self, a: u64, d: u64) -> Result<(), Exception> {
+        println!("csrw {a:03x} {d:016x}");
         self._csr_write(a, d, true)
     }
 
     fn _csr_write(&mut self, a: u64, d: u64, err: bool) -> Result<(), Exception> {
         let a = a & 4095;
-        println!("csrw {a:03x} {d:016x} {err}");
         self.check_csr_perm(a, err)?;
 
         if a >> 10 == 3 {
-            panic!("csr wr wo {a:03x} {d:016x}");
+            return Err(Exception::IllegalInst);
         }
 
         match a {
@@ -97,7 +99,7 @@ impl<'a> super::Cpu<'a> {
                 const MASK: u64 = 0x7fff_ffc0_fffe_19bf;
                 self.csrs[a as usize] &= !MASK;
                 self.csrs[a as usize] |= d & MASK;
-            }
+            },
             _ => self.csrs[a as usize] = d,
         }
 
