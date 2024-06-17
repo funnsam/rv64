@@ -1,4 +1,4 @@
-use super::Exception;
+use super::*;
 
 // supervisor trap setup
 pub const CSR_SSTATUS: u64 = 0x100;
@@ -52,16 +52,16 @@ pub const CSR_MTVAL2: u64 = 0x346;
 const MSTAT_S_MASK: u64 = 0x8000_0003_000f_e7e2;
 const MSTAT_W_MASK: u64 = 0x7fff_ffc0_fff2_19bf;
 
-impl<'a> super::Cpu<'a> {
-    pub(super) fn csr_init(&mut self) {
+impl<'a> Cpu<'a> {
+    pub fn csr_init(&mut self) {
         self.csrs[CSR_MSTATUS as usize] = 0x0000_000a_0000_0000;
     }
 
-    pub(super) fn csr_read_cpu(&self, a: u64) -> u64 {
+    pub fn csr_read_cpu(&self, a: u64) -> u64 {
         unsafe { self._csr_read(a, false).unwrap_unchecked() }
     }
 
-    pub(super) fn csr_read(&self, a: u64) -> Result<u64, Exception> {
+    pub fn csr_read(&self, a: u64) -> Result<u64, Exception> {
         println!("csrr {a:03x}");
         self._csr_read(a, true)
     }
@@ -75,9 +75,10 @@ impl<'a> super::Cpu<'a> {
             CSR_MHARTID => 0,
             CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS) & MSTAT_S_MASK,
             CSR_SATP => {
-                if (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == super::Mode::Supervisor && err {
-                    return Err(Exception::IllegalInst);
-                }
+                // TODO: enable this code after paging
+                // if err && (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == Mode::Supervisor {
+                //     return Err(Exception::IllegalInst);
+                // }
 
                 self.csrs[a as usize]
             }
@@ -86,11 +87,11 @@ impl<'a> super::Cpu<'a> {
         })
     }
 
-    pub(super) fn csr_write_cpu(&mut self, a: u64, d: u64) {
+    pub fn csr_write_cpu(&mut self, a: u64, d: u64) {
         unsafe { self._csr_write(a, d, false).unwrap_unchecked() }
     }
 
-    pub(super) fn csr_write(&mut self, a: u64, d: u64) -> Result<(), Exception> {
+    pub fn csr_write(&mut self, a: u64, d: u64) -> Result<(), Exception> {
         println!("csrw {a:03x} {d:016x}");
         self._csr_write(a, d, true)
     }
@@ -120,9 +121,10 @@ impl<'a> super::Cpu<'a> {
                 println!("{mstat:016x}");
             },
             CSR_SATP => {
-                if (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == super::Mode::Supervisor && err {
-                    return Err(Exception::IllegalInst);
-                }
+                // TODO: enable this code after paging
+                // if err && (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == Mode::Supervisor {
+                //     return Err(Exception::IllegalInst);
+                // }
 
                 self.csrs[a as usize] = d;
             }

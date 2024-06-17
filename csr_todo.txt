@@ -1,4 +1,0 @@
-satp
-pmpaddr0
-pmpcfg0
-mie

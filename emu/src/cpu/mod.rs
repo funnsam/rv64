@@ -1,5 +1,6 @@
 use super::*;
 mod csr;
+mod mmu;
 
 pub struct Cpu<'a> {
     bus: &'a mut bus::Bus<'a>,
@@ -7,9 +8,10 @@ pub struct Cpu<'a> {
 
     regs: [u64; 31],
     pc: u64,
+    mode: Mode,
 
     csrs: Box<[u64; 4096]>,
-    mode: Mode,
+    pages: mmu::Paging,
 }
 
 impl<'a> Cpu<'a> {
@@ -20,9 +22,10 @@ impl<'a> Cpu<'a> {
 
             regs: [0; 31],
             pc: 0x80000000,
+            mode: Mode::Machine,
 
             csrs: Box::new([0; 4096]),
-            mode: Mode::Machine,
+            pages: mmu::Paging::Bare,
         };
         cpu.csr_init();
         cpu
@@ -42,7 +45,7 @@ impl<'a> Cpu<'a> {
     }
 
     fn fetch(&mut self) -> Result<u32, Exception> {
-        println!("{:08x}", self.pc);
+        // println!("{:08x}", self.pc);
         if self.pc & 3 == 0 {
             let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
             self.pc += 4;
@@ -399,11 +402,10 @@ impl<'a> Cpu<'a> {
                 },
                 User 0x0 0x08 0x00 0x00 0x05 |_, _, _| Ok(None), // wfi
                 Supervisor 0x0 0x09 0x00 _ _ |_, _, _| { // sfence.vma
-                    if (self.csr_read_cpu(csr::CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == Mode::Supervisor {
-                        return Err(Exception::IllegalInst);
-                    }
+                    let satp = self.csr_read(csr::CSR_SATP)?;
 
-                    Ok(None)
+                    // Ok(None)
+                    Err(Exception::IllegalInst)
                 },
             ]),
             _ => return Err(Exception::IllegalInst),
