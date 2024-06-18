@@ -71,7 +71,12 @@ impl<'a> Cpu<'a> {
         self.check_csr_perm(a, err)?;
 
         Ok(match a {
-            CSR_MISA => (2 << 62) | (1 << 8) | (1 << 12) | (1 << 18) /* | 1 << 5 | 1 << 3 */,
+            // rv64im/su
+            // TODO:
+            // A | bit 0
+            // F | bit 5
+            // D | bit 3
+            CSR_MISA => (2 << 62) | (1 << 8) | (1 << 12) | (1 << 18) | (1 << 20),
             CSR_MHARTID => 0,
             CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS) & MSTAT_S_MASK,
             CSR_SATP => {
@@ -134,7 +139,7 @@ impl<'a> Cpu<'a> {
     }
 
     fn check_csr_perm(&self, a: u64, err: bool) -> Result<(), Exception> {
-        if err && (a >> 10) & 3 > self.mode as _ {
+        if err && (a >> 8) & 3 > self.mode as _ {
             return Err(Exception::IllegalInst);
         }
 
