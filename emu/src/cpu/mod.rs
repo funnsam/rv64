@@ -1,4 +1,6 @@
 use super::*;
+
+mod atomic;
 mod csr;
 mod mmu;
 
@@ -12,6 +14,7 @@ pub struct Cpu<'a> {
 
     csrs: Box<[u64; 4096]>,
     pages: mmu::Paging,
+    amo_rs: atomic::ReservationSet,
 }
 
 impl<'a> Cpu<'a> {
@@ -26,6 +29,7 @@ impl<'a> Cpu<'a> {
 
             csrs: Box::new([0; 4096]),
             pages: mmu::Paging::Bare,
+            amo_rs: atomic::ReservationSet::new(),
         };
         cpu.csr_init();
         cpu
@@ -167,6 +171,23 @@ impl<'a> Cpu<'a> {
                     self.write_reg(rds as _, v);
                 }
             }};
+            (amo [$($f3: tt $f5: tt $exec: expr),* $(,)?]) => {{
+                let r1 = (inst >> 15) & 0x1f;
+                let r1 = self.read_reg(r1 as _);
+                let r2 = (inst >> 20) & 0x1f;
+                let r2 = self.read_reg(r2 as _);
+                let rd = (inst >> 7) & 0x1f;
+                let aqrl = atomic::AqRlMode::from_bits(inst >> 25);
+
+                let v = match ((inst >> 12) & 7, inst >> 27) {
+                    $(
+                        ($f3, $f5) => $exec(r1, r2, aqrl)?,
+                    )*
+                    _ => return Err(Exception::IllegalInst),
+                };
+
+                self.write_reg(rd as _, v);
+            }};
         }
 
         match opc {
@@ -283,6 +304,33 @@ impl<'a> Cpu<'a> {
                 0x7 0x01 |a: u64, b| Ok((a as u32).checked_rem(b as u32).unwrap_or(a as u32) as i32 as u64),
             ]),
             0x0f => {},
+            0x2f => exec!(amo [
+                0x2 0x02 |a, _, aqrl| Ok(self.atomic_load_u32(a, aqrl)? as i32 as u64),
+                0x2 0x03 |a, b, aqrl| Ok(self.atomic_store_u32(a, b as _, aqrl).is_err() as u64),
+
+                0x3 0x02 |a, _, aqrl| Ok(self.atomic_load_u64(a, aqrl)?),
+                0x3 0x03 |a, b, aqrl| Ok(self.atomic_store_u64(a, b, aqrl).is_err() as u64),
+
+                0x2 0x01 |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |_| b as u32)? as i32 as u64),
+                0x2 0x00 |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| a + b as u32)? as i32 as u64),
+                0x2 0x04 |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| a ^ b as u32)? as i32 as u64),
+                0x2 0x0c |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| a & b as u32)? as i32 as u64),
+                0x2 0x08 |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| a | b as u32)? as i32 as u64),
+                0x2 0x10 |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| (a as i32).min(b as i32) as u32)? as i32 as u64),
+                0x2 0x14 |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| (a as i32).max(b as i32) as u32)? as i32 as u64),
+                0x2 0x18 |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| a.min(b as u32))? as i32 as u64),
+                0x2 0x1c |a, b, aqrl| Ok(self.atomic_mo_u32(a, aqrl, |a| a.max(b as u32))? as i32 as u64),
+
+                0x3 0x01 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |_| b)?),
+                0x3 0x00 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a + b)?),
+                0x3 0x04 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a ^ b)?),
+                0x3 0x0c |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a & b)?),
+                0x3 0x08 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a | b)?),
+                0x3 0x10 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| (a as i64).min(b as i64) as u64)?),
+                0x3 0x14 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| (a as i64).max(b as i64) as u64)?),
+                0x3 0x18 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a.min(b))?),
+                0x3 0x1c |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a.max(b))?),
+            ]),
             0x73 => exec!(p [
                 User 0x1 _ dr _ _ |a, _, b| { // csrrw
                     let rv = if dr != 0 {

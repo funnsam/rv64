@@ -5,7 +5,10 @@ failed=()
 
 for f in "./tests/"*.bin; do
     echo -e "\n\x1b[1mTesting:\x1b[0m $(basename $f)"
-    timeout 5 ./target/release/rv64 "$f" --testing || failed+=("$(basename $f) ($?)")
+    timeout 5 ./target/release/rv64 "$f" --testing || {
+        code=$?
+        failed+=("$(basename $f) ($code)")
+    }
 done
 
 fails=${#failed[@]}

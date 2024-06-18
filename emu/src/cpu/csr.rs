@@ -71,22 +71,20 @@ impl<'a> Cpu<'a> {
         self.check_csr_perm(a, err)?;
 
         Ok(match a {
-            // rv64im/su
             // TODO:
-            // A | bit 0
             // F | bit 5
             // D | bit 3
-            CSR_MISA => (2 << 62) | (1 << 8) | (1 << 12) | (1 << 18) | (1 << 20),
+            CSR_MISA => 0x8000000000141101, // rv64ima_su (Z extensions are not in here)
             CSR_MHARTID => 0,
             CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS) & MSTAT_S_MASK,
             CSR_SATP => {
-                if err && (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == Mode::Supervisor {
+                if err && self.mode == Mode::Supervisor && (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 {
                     return Err(Exception::IllegalInst);
                 }
 
                 self.csrs[a as usize]
             }
-            0x7a0 | 0x7a5 => 1,
+            0x7a0 | 0x7a5 => 1, // throw off debug mode tests
             _ => self.csrs[a as usize],
         })
     }
