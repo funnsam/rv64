@@ -47,7 +47,7 @@ impl<'a> Cpu<'a> {
     fn fetch(&mut self) -> Result<u32, Exception> {
         // println!("{:08x}", self.pc);
         if self.pc & 3 == 0 {
-            let i = self.bus.load_u32(self.pc).map_err(|_| Exception::InstAccessFault);
+            let i = self.mmu_load_xu32(self.pc);
             self.pc += 4;
             i
         } else {
@@ -184,17 +184,17 @@ impl<'a> Cpu<'a> {
                 0x7 |a, b| Ok(a >= b),
             ]),
             0x03 => exec!(i [
-                0x0 |a, b| Ok(self.bus.load_u8(a + b).map_err(|_| Exception::LoadAccessFault)? as i8 as u64),
-                0x1 |a, b| Ok(self.bus.load_u16(a + b).map_err(|_| Exception::LoadAccessFault)? as i16 as u64),
-                0x2 |a, b| Ok(self.bus.load_u32(a + b).map_err(|_| Exception::LoadAccessFault)? as i32 as u64),
-                0x3 |a, b| Ok(self.bus.load_u64(a + b).map_err(|_| Exception::LoadAccessFault)?),
-                0x4 |a, b| Ok(self.bus.load_u8(a + b).map_err(|_| Exception::LoadAccessFault)? as u64),
-                0x5 |a, b| Ok(self.bus.load_u16(a + b).map_err(|_| Exception::LoadAccessFault)? as u64),
-                0x6 |a, b| Ok(self.bus.load_u32(a + b).map_err(|_| Exception::LoadAccessFault)? as u64),
+                0x0 |a, b| Ok(self.mmu_load_u8(a + b)? as i8 as u64),
+                0x1 |a, b| Ok(self.mmu_load_u16(a + b)? as i16 as u64),
+                0x2 |a, b| Ok(self.mmu_load_u32(a + b)? as i32 as u64),
+                0x3 |a, b| Ok(self.mmu_load_u64(a + b)?),
+                0x4 |a, b| Ok(self.mmu_load_u8(a + b)? as u64),
+                0x5 |a, b| Ok(self.mmu_load_u16(a + b)? as u64),
+                0x6 |a, b| Ok(self.mmu_load_u32(a + b)? as u64),
             ]),
             0x23 => exec!(s [
-                0x0 |a, b, c| self.bus.store_u8(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
-                0x1 |a, b, c| self.bus.store_u16(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
+                0x0 |a, b, c| self.mmu_store_u8(a + c, b as _),
+                0x1 |a, b, c| self.mmu_store_u16(a + c, b as _),
                 0x2 |a, b, c| {
                     if testing && (a + c == 0x80001004 || a + c == 0x80002004) && b == 0 {
                         std::process::exit(self.bus.load_u32(a + c - 4).unwrap() as i32 - 1);
@@ -202,9 +202,9 @@ impl<'a> Cpu<'a> {
                         println!("{:016x} {}", a + c, b);
                     }
 
-                    self.bus.store_u32(a + c, b as _).map_err(|_| Exception::StoreAccessFault)
+                    self.mmu_store_u32(a + c, b as _)
                 },
-                0x3 |a, b, c| self.bus.store_u64(a + c, b as _).map_err(|_| Exception::StoreAccessFault),
+                0x3 |a, b, c| self.mmu_store_u64(a + c, b as _),
             ]),
             0x13 => exec!(i [
                 0x0 |a, b| Ok(a + b),
@@ -359,10 +359,6 @@ impl<'a> Cpu<'a> {
 
                     mstat &= !0x100; // sPP = user
 
-                    if self.mode != mode {
-                        mstat &= !0x20000; // mPRV = 0
-                    }
-
                     self.mode = mode;
                     println!("{:?}", self.mode);
                     self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
@@ -383,7 +379,7 @@ impl<'a> Cpu<'a> {
 
                     mstat &= !0x1800; // mPP = user
 
-                    if self.mode != mode {
+                    if mode != Mode::Machine {
                         mstat &= !0x20000; // mPRV = 0
                     }
 
@@ -401,12 +397,7 @@ impl<'a> Cpu<'a> {
                     Ok(None)
                 },
                 User 0x0 0x08 0x00 0x00 0x05 |_, _, _| Ok(None), // wfi
-                Supervisor 0x0 0x09 0x00 _ _ |_, _, _| { // sfence.vma
-                    let satp = self.csr_read(csr::CSR_SATP)?;
-
-                    // Ok(None)
-                    Err(Exception::IllegalInst)
-                },
+                Supervisor 0x0 0x09 0x00 _ _ |_, _, _| self.flush_mapping().map(|_| None), // sfence.vma
             ]),
             _ => return Err(Exception::IllegalInst),
         }
@@ -423,18 +414,19 @@ impl<'a> Cpu<'a> {
             csr::CSR_STVAL
         };
 
-        self.csr_write_cpu(tval, match cause {
+        let cause = match cause {
             Exception::IllegalInst => {
-                let i = self.bus.load_u32(epc - 4).unwrap_or(0);
+                let i = self.mmu_load_xu32(epc - 4).unwrap_or(0);
                 println!("{i:08x}");
                 i as _
             },
             _ => 0,
-        });
+        };
+        self.csr_write_cpu(tval, cause);
     }
 
     fn interrupt(&mut self, cause: u64) {
-        println!("{cause} {:016x}", self.pc);
+        // println!("{cause} {:016x}", self.pc);
         self.trap(cause | (1 << 63), csr::CSR_MIDELEG);
     }
 
@@ -459,7 +451,7 @@ impl<'a> Cpu<'a> {
         };
         self.pc = pc;
 
-        println!("{mtvec:016x} {pc:016x}");
+        // println!("{mtvec:016x} {pc:016x}");
     }
 
     fn machine_trap(&mut self, cause: u64) {
@@ -471,6 +463,7 @@ impl<'a> Cpu<'a> {
         mstat |= (mstat & 8) << 4;
         mstat &= !8;
         mstat |= (self.mode as u64) << 11;
+        // mstat &= !0x20000; // HACK: mPRV = 0
         self.csr_write_cpu(csr::CSR_MSTATUS, mstat);
 
         let mtvec = self.csr_read_cpu(csr::CSR_MTVEC);
@@ -567,7 +560,7 @@ impl Mode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Exception {
+pub(crate) enum Exception {
     InstAddrMisalign = 0,
     InstAccessFault = 1,
     IllegalInst = 2,
@@ -590,7 +583,7 @@ enum Exception {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Interrupt {
+pub(crate) enum Interrupt {
     SupervisorSoftwareInt = 1,
     MachineSoftwareInt = 3,
     SupervisorTimerInt = 5,
