@@ -62,7 +62,7 @@ impl<'a> Cpu<'a> {
     }
 
     pub(crate) fn csr_read(&self, a: u64) -> Result<u64, Exception> {
-        println!("csrr {a:03x}");
+        // println!("csrr {a:03x}");
         self._csr_read(a, true)
     }
 
@@ -96,7 +96,7 @@ impl<'a> Cpu<'a> {
     }
 
     pub(crate) fn csr_write(&mut self, a: u64, d: u64) -> Result<(), Exception> {
-        println!("csrw {a:03x} {d:016x}");
+        // println!("csrw {a:03x} {d:016x}");
         self._csr_write(a, d, true)
     }
 
@@ -111,7 +111,6 @@ impl<'a> Cpu<'a> {
         match a {
             CSR_MISA => {},
             CSR_MSTATUS => {
-                println!("ms {:016x}",d&MSTAT_W_MASK);
                 self.csrs[a as usize] &= !MSTAT_W_MASK;
                 self.csrs[a as usize] |= d & MSTAT_W_MASK;
             },
@@ -119,11 +118,9 @@ impl<'a> Cpu<'a> {
                 const MASK: u64 = MSTAT_S_MASK & MSTAT_W_MASK;
 
                 let mut mstat = self.csr_read_cpu(CSR_MSTATUS);
-                println!("{mstat:016x}");
                 mstat &= !MASK;
                 mstat |= d & MASK;
                 self.csr_write_cpu(CSR_MSTATUS, mstat);
-                println!("{mstat:016x}");
             },
             CSR_SATP => {
                 if err && (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 && self.mode == Mode::Supervisor {

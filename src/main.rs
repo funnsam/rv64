@@ -9,9 +9,6 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    if args.testing {
-        println!("{}", args.prog);
-    }
 
     let mut ram = std::fs::read(&args.prog).unwrap();
     let mut bus = emu::bus::Bus::new(&mut ram);
