@@ -191,11 +191,17 @@ impl<'a> Cpu<'a> {
                 self.write_reg(rd as _, v);
             }};
             (_ getrwf f32) => { (Self::read_float_reg_f32, Self::write_float_reg_f32) };
-            (_ getrwf r2i) => { (Self::read_float_reg, Self::write_reg) };
+            (_ getrwf f64) => { (Self::read_float_reg_f64, Self::write_float_reg_f64) };
+            (_ getrwf sr2i) => { (Self::read_float_reg_r32, Self::write_reg) };
+            (_ getrwf dr2i) => { (Self::read_float_reg_r64, Self::write_reg) };
             (_ getrwf f2i) => { (Self::read_float_reg_f32, Self::write_reg) };
-            (_ getrwf i2r) => { (Self::read_reg, Self::write_float_reg) };
+            (_ getrwf d2i) => { (Self::read_float_reg_f64, Self::write_reg) };
+            (_ getrwf i2sr) => { (Self::read_reg, Self::write_float_reg_r32) };
+            (_ getrwf i2dr) => { (Self::read_reg, Self::write_float_reg_r64) };
             (_ getrwf i2f) => { (Self::read_reg, Self::write_float_reg_f32) };
-            (_ getrwf r2r) => { (Self::read_float_reg, Self::write_float_reg) };
+            (_ getrwf i2d) => { (Self::read_reg, Self::write_float_reg_f64) };
+            (_ getrwf sr2sr) => { (Self::read_float_reg_r32, Self::write_float_reg_r32) };
+            (_ getrwf dr2dr) => { (Self::read_float_reg_r64, Self::write_float_reg_r64) };
             (fop [$($f7: tt $ty: tt $r2: tt $rm: tt $exec: expr),* $(,)?]) => {{
                 let r1 = (inst >> 15) & 0x1f;
                 let r2 = (inst >> 20) & 0x1f;
@@ -215,6 +221,29 @@ impl<'a> Cpu<'a> {
                                 $exec(r1, r2)?
                             };
 
+                            w(self, rd as _, v);
+                        },
+                    )*
+                    _ => return Err(Exception::IllegalInst),
+                }
+            }};
+            (_ getftyid f32) => { 0 };
+            (_ getftyid f64) => { 1 };
+            (r4f [$($ty: tt $exec: expr),* $(,)?]) => {{
+                let r1 = (inst >> 15) & 0x1f;
+                let r2 = (inst >> 20) & 0x1f;
+                let r3 = (inst >> 27) & 0x1f;
+                let rd = (inst >> 7) & 0x1f;
+                let rm = (inst >> 12) & 7;
+
+                match (inst >> 25) & 3 {
+                    $(
+                        exec!(_ getftyid $ty) => {
+                            let (r, w) = exec!(_ getrwf $ty);
+                            let r1 = r(self, r1 as _);
+                            let r2 = r(self, r2 as _);
+                            let r3 = r(self, r3 as _);
+                            let v = float::set_rm!(self rm, || $exec(r1, r2, r3))?;
                             w(self, rd as _, v);
                         },
                     )*
@@ -365,10 +394,28 @@ impl<'a> Cpu<'a> {
                 0x3 0x1c |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a.max(b))?),
             ]),
             0x07 => exec!(ifr [
-                0x2 |a, b| Ok(self.mmu_load_u32(a + b)? as u64),
+                0x2 |a, b| Ok(float::nan_box_u32(self.mmu_load_u32(a + b)?)),
+                0x3 |a, b| Ok(self.mmu_load_u64(a + b)?),
             ]),
             0x27 => exec!(sfr [
                 0x2 |a, b, c| self.mmu_store_u32(a + c, b as _),
+                0x3 |a, b, c| self.mmu_store_u64(a + c, b),
+            ]),
+            0x43 => exec!(r4f [
+                f32 |a, b, c| Ok(self.float_do_op_f32(|| a * b + c)),
+                f64 |a, b, c| Ok(self.float_do_op_f64(|| a * b + c)),
+            ]),
+            0x47 => exec!(r4f [
+                f32 |a, b, c| Ok(self.float_do_op_f32(|| a * b - c)),
+                f64 |a, b, c| Ok(self.float_do_op_f64(|| a * b - c)),
+            ]),
+            0x4b => exec!(r4f [
+                f32 |a, b, c| Ok(self.float_do_op_f32(|| -((a * b) as f32) + c)),
+                f64 |a, b, c| Ok(self.float_do_op_f64(|| -((a * b) as f64) + c)),
+            ]),
+            0x4f => exec!(r4f [
+                f32 |a, b, c| Ok(self.float_do_op_f32(|| -((a * b) as f32) - c)),
+                f64 |a, b, c| Ok(self.float_do_op_f64(|| -((a * b) as f64) - c)),
             ]),
             0x53 => exec!(fop [
                 0x00 f32 _ _ |a, b| Ok(self.float_do_op_f32(|| a + b)),
@@ -376,14 +423,16 @@ impl<'a> Cpu<'a> {
                 0x08 f32 _ _ |a, b| Ok(self.float_do_op_f32(|| a * b)),
                 0x0c f32 _ _ |a, b| Ok(self.float_do_op_f32(|| a / b)),
                 0x2c f32 0 _ |a: f32, _| Ok(self.float_do_op_f32(|| a.sqrt())),
-                0x10 r2r _ 0 |a, b| Ok((a & 0x7fff_ffff) | (b & 0x8000_0000)),
-                0x10 r2r _ 1 |a, b: u64| Ok((a & 0x7fff_ffff) | (!b & 0x8000_0000)),
-                0x10 r2r _ 2 |a, b| Ok((a & 0x7fff_ffff) | ((a ^ b) & 0x8000_0000)),
+                0x10 sr2sr _ 0 |a, b| Ok((a & 0x7fff_ffff) | (b & 0x8000_0000)),
+                0x10 sr2sr _ 1 |a, b: u32| Ok((a & 0x7fff_ffff) | (!b & 0x8000_0000)),
+                0x10 sr2sr _ 2 |a, b| Ok((a & 0x7fff_ffff) | ((a ^ b) & 0x8000_0000)),
+                0x14 f32 _ 0 |a: f32, b| Ok(float::minmax!(f32 f32_is_snan self a b min)),
+                0x14 f32 _ 1 |a: f32, b| Ok(float::minmax!(f32 f32_is_snan self a b max)),
                 0x60 f2i 0 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 i32 s) as u64)),
                 0x60 f2i 1 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 u32 u) as i32 as u64)),
                 0x60 f2i 2 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 i64 s) as u64)),
                 0x60 f2i 3 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 u64 u))),
-                0x70 r2i 0 0 |a, _| Ok(a as i32 as u64),
+                0x70 sr2i 0 0 |a, _| Ok(a as u64),
                 0x50 f2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, float::f32_is_snan)),
                 0x50 f2i _ 1 |a, b| Ok(self.float_cmp(a, b, a < b, f32::is_nan)),
                 0x50 f2i _ 0 |a, b| Ok(self.float_cmp(a, b, a <= b, f32::is_nan)),
@@ -403,7 +452,43 @@ impl<'a> Cpu<'a> {
                 0x68 i2f 1 _ |a, _| Ok(a as u32 as f32),
                 0x68 i2f 2 _ |a, _| Ok(a as i64 as f32),
                 0x68 i2f 3 _ |a, _| Ok(a as u64 as f32),
-                0x78 i2r 0 0 |a, _| Ok(a),
+                0x78 i2sr 0 0 |a, _| Ok(a as u32),
+
+                0x01 f64 _ _ |a, b| Ok(self.float_do_op_f64(|| a + b)),
+                0x05 f64 _ _ |a, b| Ok(self.float_do_op_f64(|| a - b)),
+                0x09 f64 _ _ |a, b| Ok(self.float_do_op_f64(|| a * b)),
+                0x0d f64 _ _ |a, b| Ok(self.float_do_op_f64(|| a / b)),
+                0x2d f64 0 _ |a: f64, _| Ok(self.float_do_op_f64(|| a.sqrt())),
+                0x11 dr2dr _ 0 |a, b| Ok((a & 0x7fff_ffff_ffff_ffff) | (b & 0x8000_0000_0000_0000)),
+                0x11 dr2dr _ 1 |a, b: u64| Ok((a & 0x7fff_ffff_ffff_ffff) | (!b & 0x8000_0000_0000_0000)),
+                0x11 dr2dr _ 2 |a, b| Ok((a & 0x7fff_ffff_ffff_ffff) | ((a ^ b) & 0x8000_0000_0000_0000)),
+                0x15 f64 _ 0 |a: f64, b| Ok(float::minmax!(f64 f64_is_snan self a b min)),
+                0x15 f64 _ 1 |a: f64, b| Ok(float::minmax!(f64 f64_is_snan self a b max)),
+                0x61 d2i 0 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 i32 s) as u64)),
+                0x61 d2i 1 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 u32 u) as i32 as u64)),
+                0x61 d2i 2 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 i64 s) as u64)),
+                0x61 d2i 3 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 u64 u))),
+                0x71 dr2i 0 0 |a, _| Ok(a),
+                0x51 d2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, float::f64_is_snan)),
+                0x51 d2i _ 1 |a, b| Ok(self.float_cmp(a, b, a < b, f64::is_nan)),
+                0x51 d2i _ 0 |a, b| Ok(self.float_cmp(a, b, a <= b, f64::is_nan)),
+                0x71 d2i 0 1 |a: f64, _| Ok(
+                    ((a == f64::NEG_INFINITY) as u64) << 0
+                    | ((a.is_sign_negative() && a.is_normal()) as u64) << 1
+                    | ((a.is_sign_negative() && a.is_subnormal()) as u64) << 2
+                    | ((a.is_sign_negative() && a == -0.0) as u64) << 3
+                    | ((a.is_sign_positive() && a == 0.0) as u64) << 4
+                    | ((a.is_sign_positive() && a.is_subnormal()) as u64) << 5
+                    | ((a.is_sign_positive() && a.is_normal()) as u64) << 6
+                    | ((a == f64::INFINITY) as u64) << 7
+                    | (float::f64_is_snan(a) as u64) << 8
+                    | ((!float::f64_is_snan(a) && a.is_nan()) as u64) << 9
+                ),
+                0x69 i2d 0 _ |a, _| Ok(a as i32 as f64),
+                0x69 i2d 1 _ |a, _| Ok(a as u32 as f64),
+                0x69 i2d 2 _ |a, _| Ok(a as i64 as f64),
+                0x69 i2d 3 _ |a, _| Ok(a as u64 as f64),
+                0x79 i2dr 0 0 |a, _| Ok(a),
             ]),
             0x73 => exec!(p [
                 User 0x1 _ dr _ _ |a, _, b| { // csrrw

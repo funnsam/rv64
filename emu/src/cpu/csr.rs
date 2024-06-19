@@ -77,9 +77,8 @@ impl<'a> Cpu<'a> {
 
         Ok(match a {
             // TODO:
-            // F | bit 5
             // D | bit 3
-            CSR_MISA => 0x8000000000141101, // rv64ima_su (Z extensions are not in here)
+            CSR_MISA => 0x8000000000141121, // rv64ima_su (Z extensions are not in here)
             CSR_MHARTID => 0,
             CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS) & MSTAT_S_MASK,
             CSR_SATP => {
