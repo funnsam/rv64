@@ -130,7 +130,7 @@ macro_rules! cast {
             true
         };
         let v = if $v.is_nan() { $t::MAX } else { $v as $t };
-        if need_set && v as $f != $v { $s.check_fpu(); }
+        if need_set && v as $f != $v { $s.float_set_flags($crate::cpu::float::NV); }
         v
     }};
 }
