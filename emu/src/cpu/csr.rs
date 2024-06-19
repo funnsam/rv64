@@ -62,7 +62,7 @@ impl<'a> Cpu<'a> {
     }
 
     pub(crate) fn csr_read(&self, a: u64) -> Result<u64, Exception> {
-        // println!("csrr {a:03x}");
+        println!("csrr {a:03x}");
         self._csr_read(a, true)
     }
 
@@ -94,7 +94,7 @@ impl<'a> Cpu<'a> {
     }
 
     pub(crate) fn csr_write(&mut self, a: u64, d: u64) -> Result<(), Exception> {
-        // println!("csrw {a:03x} {d:016x}");
+        println!("csrw {a:03x} {d:016x}");
         self._csr_write(a, d, true)
     }
 

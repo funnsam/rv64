@@ -3,7 +3,7 @@
 cargo b -r || exit 1
 failed=()
 
-for f in "./tests/"*.bin; do
+for f in "./tests/rv64$1"*.bin; do
     echo -e "\n\x1b[1mTesting:\x1b[0m $(basename $f)"
     timeout 5 ./target/release/rv64 "$f" --testing || {
         code=$?
@@ -25,5 +25,6 @@ else
     for fail in "${failed[@]}"; do
         echo "    $fail"
     done
-    exit $fails
 fi
+
+exit $fails

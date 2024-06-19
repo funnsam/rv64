@@ -2,6 +2,7 @@ use super::*;
 
 mod atomic;
 mod csr;
+mod float;
 mod mmu;
 
 pub struct Cpu<'a> {
@@ -9,6 +10,7 @@ pub struct Cpu<'a> {
     io: &'a mut io::Io,
 
     regs: [u64; 31],
+    float_regs: [u64; 32],
     pc: u64,
     mode: Mode,
 
@@ -24,6 +26,7 @@ impl<'a> Cpu<'a> {
             io,
 
             regs: [0; 31],
+            float_regs: [0; 32],
             pc: 0x80000000,
             mode: Mode::Machine,
 
@@ -79,31 +82,30 @@ impl<'a> Cpu<'a> {
 
                 self.write_reg(rd as _, v);
             }};
-            (i [$($f3: tt $exec: expr),* $(,)?]) => {{
-                exec!(ii [$($f3 false |a, b, _ds, _as| $exec(a, b)),*]);
-            }};
-            (ii [$($f3: tt $im: tt $exec: expr),* $(,)?]) => {{
+            (i $($t: tt)*) => { exec!(write_reg i $($t)*) };
+            (ifr $($t: tt)*) => { exec!(write_float_reg i $($t)*) };
+            ($wr: tt i [$($f3: tt $exec: expr),* $(,)?]) => {{
                 let rs = (inst >> 15) & 0x1f;
+                let rs = self.read_reg(rs as _);
                 let im = (inst as i32 >> 20) as u64;
                 let rd = (inst >> 7) & 0x1f;
 
                 let v = match (inst >> 12) & 7 {
                     $(
-                        $f3 => {
-                            let rs_v = if $im { rs as _ } else { self.read_reg(rs as _) };
-                            $exec(rs_v, im, rd, rs)?
-                        },
+                        $f3 => $exec(rs, im)?,
                     )*
                     _ => return Err(Exception::IllegalInst),
                 };
 
-                self.write_reg(rd as _, v);
+                self.$wr(rd as _, v);
             }};
-            (s [$($f3: tt $exec: expr),* $(,)?]) => {{
+            (s $($t: tt)*) => { exec!(read_reg s $($t)*) };
+            (sfr $($t: tt)*) => { exec!(read_float_reg s $($t)*) };
+            ($rr: tt s [$($f3: tt $exec: expr),* $(,)?]) => {{
                 let r1 = (inst >> 15) & 0x1f;
                 let r1 = self.read_reg(r1 as _);
                 let r2 = (inst >> 20) & 0x1f;
-                let r2 = self.read_reg(r2 as _);
+                let r2 = self.$rr(r2 as _);
                 let im = ((inst & 0xfe00_0000) as i32 >> 20) as u64 // [11:5]
                     | ((inst >> 7) & 0x1f) as u64; // [4:0]
                 match (inst >> 12) & 7 {
@@ -187,6 +189,30 @@ impl<'a> Cpu<'a> {
                 };
 
                 self.write_reg(rd as _, v);
+            }};
+            (_ getrwf f32) => { (Self::read_float_reg_f32, Self::write_float_reg_f32) };
+            (_ getrwf r2i) => { (Self::read_float_reg, Self::write_reg) };
+            (_ getrwf f2i) => { (Self::read_float_reg_f32, Self::write_reg) };
+            (_ getrwf i2r) => { (Self::read_reg, Self::write_float_reg) };
+            (fop [$($f7: tt $ty: tt $r2: tt $rm: tt $exec: expr),* $(,)?]) => {{
+                let r1 = (inst >> 15) & 0x1f;
+                let r2 = (inst >> 20) & 0x1f;
+                let rd = (inst >> 7) & 0x1f;
+                let rm = (inst >> 12) & 7;
+                // TODO: change round mode
+
+                match (inst >> 25, r2, rm) {
+                    $(
+                        ($f7, $r2, $rm) => {
+                            let (r, w) = exec!(_ getrwf $ty);
+                            let r1 = r(self, r1 as _);
+                            let r2 = r(self, r2 as _);
+                            let v = $exec(r1, r2)?;
+                            w(self, rd as _, v);
+                        },
+                    )*
+                    _ => return Err(Exception::IllegalInst),
+                }
             }};
         }
 
@@ -330,6 +356,35 @@ impl<'a> Cpu<'a> {
                 0x3 0x14 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| (a as i64).max(b as i64) as u64)?),
                 0x3 0x18 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a.min(b))?),
                 0x3 0x1c |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a.max(b))?),
+            ]),
+            0x07 => exec!(ifr [
+                0x2 |a, b| Ok(self.mmu_load_u32(a + b)? as u64),
+            ]),
+            0x27 => exec!(sfr [
+                0x2 |a, b, c| self.mmu_store_u32(a + c, b as _),
+            ]),
+            0x53 => exec!(fop [
+                0x00 f32 _ _ |a, b| Ok(a + b),
+                0x04 f32 _ _ |a, b| Ok(a - b),
+                0x08 f32 _ _ |a, b| Ok(a * b),
+                0x0c f32 _ _ |a, b| Ok(a / b),
+                0x70 r2i 0 0 |a, _| Ok(a),
+                0x78 i2r 0 0 |a, _| Ok(a),
+                0x50 f2i _ 2 |a, b| Ok((a == b) as u64),
+                0x50 f2i _ 1 |a, b| Ok((a < b) as u64),
+                0x50 f2i _ 0 |a, b| Ok((a <= b) as u64),
+                0x70 f2i 0 1 |a: f32, _| Ok(
+                    ((a == f32::NEG_INFINITY) as u64) << 0
+                    | ((a.is_sign_negative() && a.is_normal()) as u64) << 1
+                    | ((a.is_sign_negative() && a.is_subnormal()) as u64) << 2
+                    | ((a.is_sign_negative() && a == -0.0) as u64) << 3
+                    | ((a.is_sign_positive() && a == 0.0) as u64) << 4
+                    | ((a.is_sign_positive() && a.is_subnormal()) as u64) << 5
+                    | ((a.is_sign_positive() && a.is_normal()) as u64) << 6
+                    | ((a == f32::INFINITY) as u64) << 7
+                    | (float::f32_is_signaling_nan(a) as u64) << 8
+                    | ((!float::f32_is_signaling_nan(a) && a.is_nan()) as u64) << 9
+                ),
             ]),
             0x73 => exec!(p [
                 User 0x1 _ dr _ _ |a, _, b| { // csrrw
@@ -542,7 +597,7 @@ impl<'a> Cpu<'a> {
 
         let mut mip = self.csr_read_cpu(csr::CSR_MIP);
         let mut mie = self.csr_read_cpu(csr::CSR_MIE);
-        let mstat_mie = (self.csr_read_cpu(csr::CSR_MSTATUS) >> 3) & 1 == 1;
+        let mstat_mie = self.csr_read_cpu(csr::CSR_MSTATUS) & 0x8 != 0;
         let delg = self.csr_read_cpu(csr::CSR_MIDELEG);
 
         for b in CHECK_LIST.into_iter() {
