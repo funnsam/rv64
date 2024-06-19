@@ -15,7 +15,7 @@ impl<'a> Cpu<'a> {
         self.csr_write_cpu(csr::CSR_FCSR, o | f);
     }
 
-    pub(crate) fn float_cmp<T, F: Fn(T) -> bool >(&mut self, a: T, b: T, c: bool, nv: F) -> u64 {
+    pub(crate) fn float_cmp<T, F: Fn(T) -> bool>(&mut self, a: T, b: T, c: bool, nv: F) -> u64 {
         if nv(a) || nv(b) {
             self.float_set_flags(NV);
             0
@@ -24,22 +24,33 @@ impl<'a> Cpu<'a> {
         }
     }
 
-    fn check_fpu(&mut self) {
+    pub(crate) fn check_fpu(&mut self) {
         unsafe {
             let f = (fenv::fetestexcept(fenv::FE_INVALID as _) != 0) as u64 * NV
                 | (fenv::fetestexcept(fenv::FE_DIVBYZERO as _) != 0) as u64 * DZ
                 | (fenv::fetestexcept(fenv::FE_INEXACT as _) != 0) as u64 * NX
                 | (fenv::fetestexcept(fenv::FE_OVERFLOW as _) != 0) as u64 * OF
                 | (fenv::fetestexcept(fenv::FE_UNDERFLOW as _) != 0) as u64 * UF;
+            println!("{f:05b}");
             self.float_set_flags(f);
         }
     }
 
-    pub(crate) fn float_do_op<T, F: Fn() -> T>(&mut self, f: F) -> T {
+    pub(crate) fn float_do_op<T, F: Fn(&mut Self) -> T>(&mut self, f: F) -> T {
+        unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); }
+        let v = f(self);
+        v
+    }
+
+    pub(crate) fn float_do_op_f32<F: Fn() -> f32>(&mut self, f: F) -> f32 {
         unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); }
         let v = f();
         self.check_fpu();
-        v
+        if v.is_nan() {
+            f32::from_bits(0x7fc0_0000)
+        } else {
+            v
+        }
     }
 
     pub(crate) fn get_mode(&self, m: u32, d: bool) -> Result<i32, Exception> {
@@ -72,8 +83,24 @@ macro_rules! set_rm {
 
 #[macro_export]
 macro_rules! cast {
-    ($v: tt $t: tt) => {{
-        if $v.is_nan() { $t::MAX } else { $v as $t }
+    ($s: tt $v: tt $f: tt $t: tt s) => {{
+        let v = if $v.is_nan() { $t::MAX } else { $v as $t };
+        $s.check_fpu();
+        v
+    }};
+    ($s: tt $v: tt $f: tt $t: tt u) => {{
+        let need_set = if $v.fract() == 0.0 && $v.is_sign_negative() {
+            $s.float_set_flags($crate::cpu::float::NV);
+            false
+        } else if $v.fract() != 0.0 {
+            $s.float_set_flags($crate::cpu::float::NX);
+            false
+        } else {
+            true
+        };
+        let v = if $v.is_nan() { $t::MAX } else { $v as $t };
+        if need_set && v as $f != $v { $s.check_fpu(); }
+        v
     }};
 }
 
