@@ -1,7 +1,9 @@
 [package]
-name = "emu"
+name = "fenv"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-fenv = { version = "0.1.0", path = "fenv" }
+
+[build-dependencies]
+bindgen = "0.69.4"

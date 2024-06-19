@@ -194,12 +194,13 @@ impl<'a> Cpu<'a> {
             (_ getrwf r2i) => { (Self::read_float_reg, Self::write_reg) };
             (_ getrwf f2i) => { (Self::read_float_reg_f32, Self::write_reg) };
             (_ getrwf i2r) => { (Self::read_reg, Self::write_float_reg) };
+            (_ getrwf i2f) => { (Self::read_reg, Self::write_float_reg_f32) };
+            (_ getrwf r2r) => { (Self::read_float_reg, Self::write_float_reg) };
             (fop [$($f7: tt $ty: tt $r2: tt $rm: tt $exec: expr),* $(,)?]) => {{
                 let r1 = (inst >> 15) & 0x1f;
                 let r2 = (inst >> 20) & 0x1f;
                 let rd = (inst >> 7) & 0x1f;
                 let rm = (inst >> 12) & 7;
-                // TODO: change round mode
 
                 match (inst >> 25, r2, rm) {
                     $(
@@ -207,7 +208,13 @@ impl<'a> Cpu<'a> {
                             let (r, w) = exec!(_ getrwf $ty);
                             let r1 = r(self, r1 as _);
                             let r2 = r(self, r2 as _);
-                            let v = $exec(r1, r2)?;
+
+                            let v = if stringify!($rm) == "_" {
+                                float::set_rm!(self rm, || $exec(r1, r2))?
+                            } else {
+                                $exec(r1, r2)?
+                            };
+
                             w(self, rd as _, v);
                         },
                     )*
@@ -364,15 +371,22 @@ impl<'a> Cpu<'a> {
                 0x2 |a, b, c| self.mmu_store_u32(a + c, b as _),
             ]),
             0x53 => exec!(fop [
-                0x00 f32 _ _ |a, b| Ok(a + b),
-                0x04 f32 _ _ |a, b| Ok(a - b),
-                0x08 f32 _ _ |a, b| Ok(a * b),
-                0x0c f32 _ _ |a, b| Ok(a / b),
-                0x70 r2i 0 0 |a, _| Ok(a),
-                0x78 i2r 0 0 |a, _| Ok(a),
-                0x50 f2i _ 2 |a, b| Ok((a == b) as u64),
-                0x50 f2i _ 1 |a, b| Ok((a < b) as u64),
-                0x50 f2i _ 0 |a, b| Ok((a <= b) as u64),
+                0x00 f32 _ _ |a, b| Ok(self.float_do_op(|| a + b)),
+                0x04 f32 _ _ |a, b| Ok(self.float_do_op(|| a - b)),
+                0x08 f32 _ _ |a, b| Ok(self.float_do_op(|| a * b)),
+                0x0c f32 _ _ |a, b| Ok(self.float_do_op(|| a / b)),
+                0x2c f32 0 _ |a: f32, _| Ok(self.float_do_op(|| a.sqrt())),
+                0x10 r2r _ 0 |a, b| Ok((a & 0x7fff_ffff) | (b & 0x8000_0000)),
+                0x10 r2r _ 1 |a, b: u64| Ok((a & 0x7fff_ffff) | (!b & 0x8000_0000)),
+                0x10 r2r _ 2 |a, b| Ok((a & 0x7fff_ffff) | ((a ^ b) & 0x8000_0000)),
+                0x60 f2i 0 _ |a: f32, _| Ok(self.float_do_op(|| float::cast!(a i32) as u64)),
+                0x60 f2i 1 _ |a: f32, _| Ok(self.float_do_op(|| float::cast!(a u32) as i32 as u64)),
+                0x60 f2i 2 _ |a: f32, _| Ok(self.float_do_op(|| float::cast!(a i64) as u64)),
+                0x60 f2i 3 _ |a: f32, _| Ok(self.float_do_op(|| float::cast!(a u64))),
+                0x70 r2i 0 0 |a, _| Ok(a as i32 as u64),
+                0x50 f2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, float::f32_is_snan)),
+                0x50 f2i _ 1 |a, b| Ok(self.float_cmp(a, b, a < b, f32::is_nan)),
+                0x50 f2i _ 0 |a, b| Ok(self.float_cmp(a, b, a <= b, f32::is_nan)),
                 0x70 f2i 0 1 |a: f32, _| Ok(
                     ((a == f32::NEG_INFINITY) as u64) << 0
                     | ((a.is_sign_negative() && a.is_normal()) as u64) << 1
@@ -382,9 +396,14 @@ impl<'a> Cpu<'a> {
                     | ((a.is_sign_positive() && a.is_subnormal()) as u64) << 5
                     | ((a.is_sign_positive() && a.is_normal()) as u64) << 6
                     | ((a == f32::INFINITY) as u64) << 7
-                    | (float::f32_is_signaling_nan(a) as u64) << 8
-                    | ((!float::f32_is_signaling_nan(a) && a.is_nan()) as u64) << 9
+                    | (float::f32_is_snan(a) as u64) << 8
+                    | ((!float::f32_is_snan(a) && a.is_nan()) as u64) << 9
                 ),
+                0x68 i2f 0 _ |a, _| Ok(a as i32 as f32),
+                0x68 i2f 1 _ |a, _| Ok(a as u32 as f32),
+                0x68 i2f 2 _ |a, _| Ok(a as i64 as f32),
+                0x68 i2f 3 _ |a, _| Ok(a as u64 as f32),
+                0x78 i2r 0 0 |a, _| Ok(a),
             ]),
             0x73 => exec!(p [
                 User 0x1 _ dr _ _ |a, _, b| { // csrrw

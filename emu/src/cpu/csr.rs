@@ -1,5 +1,10 @@
 use super::*;
 
+// floating point csrs
+pub(crate) const CSR_FFLAGS: u64 = 0x001;
+pub(crate) const CSR_FRM: u64 = 0x002;
+pub(crate) const CSR_FCSR: u64 = 0x003;
+
 // supervisor trap setup
 pub(crate) const CSR_SSTATUS: u64 = 0x100;
 pub(crate) const CSR_SIE: u64 = 0x104;
@@ -84,6 +89,8 @@ impl<'a> Cpu<'a> {
 
                 self.csrs[a as usize]
             }
+            CSR_FFLAGS => self.csr_read_cpu(CSR_FCSR) & 0x1f,
+            CSR_FRM => (self.csr_read_cpu(CSR_FCSR) >> 5) & 7,
             0x7a0 | 0x7a5 => 1, // throw off debug mode tests
             _ => self.csrs[a as usize],
         })
@@ -126,7 +133,20 @@ impl<'a> Cpu<'a> {
                 }
 
                 self.csrs[a as usize] = d;
-            }
+            },
+            CSR_FCSR => self.csrs[a as usize] = d & 0xff,
+            CSR_FFLAGS => {
+                let mut fcsr = self.csr_read_cpu(CSR_FCSR);
+                fcsr &= !0x1f;
+                fcsr |= d & 0x1f;
+                self.csr_write_cpu(CSR_FCSR, fcsr)
+            },
+            CSR_FRM => {
+                let mut fcsr = self.csr_read_cpu(CSR_FCSR);
+                fcsr &= !0xe0;
+                fcsr |= (d << 5) & 0xe0;
+                self.csr_write_cpu(CSR_FCSR, fcsr)
+            },
             _ => self.csrs[a as usize] = d,
         }
 

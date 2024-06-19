@@ -1,5 +1,5 @@
 [workspace]
-members = ["emu"]
+members = ["emu", "emu/fenv"]
 
 [package]
 name = "rv64"
