@@ -10,8 +10,26 @@ pub(crate) const F32_CNAN: u32 = 0x7fc0_0000;
 pub(crate) const F64_CNAN: u64 = 0x7ff8_0000_0000_0000;
 
 impl<'a> Cpu<'a> {
-    pub(crate) fn read_float_reg(&self, n: usize) -> u64 { self.float_regs[n] }
-    pub(crate) fn write_float_reg(&mut self, n: usize, d: u64) { self.float_regs[n] = d }
+    pub(crate) fn can_use_fp(&self) -> bool {
+        (self.csr_read_cpu(csr::CSR_MSTATUS) >> 13) & 3 != 0
+    }
+
+    pub(crate) fn mut_fp_state(&mut self) {
+        let mut ms = self.csr_read_cpu(csr::CSR_MSTATUS);
+        ms |= 0x6000;
+        self.csr_write_cpu(csr::CSR_MSTATUS, ms);
+    }
+
+    fn read_float_reg(&self, n: usize) -> u64 { self.float_regs[n] }
+    fn write_float_reg(&mut self, n: usize, d: u64) -> Result<(), Exception> {
+        if !self.can_use_fp() {
+            return Err(Exception::IllegalInst);
+        }
+
+        self.mut_fp_state();
+        self.float_regs[n] = d;
+        Ok(())
+    }
 
     pub(crate) fn float_set_flags(&mut self, f: u64) {
         let o = self.csr_read_cpu(csr::CSR_FCSR);
@@ -131,17 +149,21 @@ macro_rules! minmax {
     (cnan f64) => {
         f64::from_bits($crate::cpu::float::F64_CNAN)
     };
-    ($t: tt $n: tt $s: tt $a: tt $b: tt $op: tt) => {{
-        if $crate::cpu::float::$n($a) || $crate::cpu::float::$n($b) {
+    ($t: tt $s: tt $a: tt $b: tt $op: tt) => {{
+        if $a.is_snan() || $b.is_snan() {
             $s.float_set_flags($crate::cpu::float::NV);
         }
 
-        let v = $a.$op($b);
-        if $a.abs() == 0.0 && $b.abs() == 0.0 {
-            minmax!(zh $a $b $op)
+        if $a.is_nan() && $b.is_nan() {
+            minmax!(cnan $t)
+        } else if $a.is_nan() {
+            $b
+        } else if $b.is_nan() {
+            $a
         } else {
-            if v.is_nan() {
-                minmax!(cnan $t)
+            let v = $a.$op($b);
+            if $a.abs() == 0.0 && $b.abs() == 0.0 {
+                minmax!(zh $a $b $op)
             } else {
                 v
             }
@@ -162,12 +184,15 @@ macro_rules! gen {
                 }
             }
 
-            pub(crate) fn $rw(&mut self, n: usize, d: $width) {
+            pub(crate) fn $rw(&mut self, n: usize, d: $width) -> Result<(), Exception> {
                 self.write_float_reg(n, (u64::MAX ^ $width::MAX as u64) | (d as u64))
             }
 
             pub(crate) fn $r(&self, n: usize) -> $t { $t::from_bits(self.$rr(n)) }
-            pub(crate) fn $w(&mut self, n: usize, d: $t) { self.$rw(n, d.to_bits()) }
+
+            pub(crate) fn $w(&mut self, n: usize, d: $t) -> Result<(), Exception> {
+                self.$rw(n, d.to_bits())
+            }
         }
     };
 }
@@ -176,22 +201,26 @@ gen!(f32 u32 read_float_reg_f32 write_float_reg_f32 read_float_reg_r32 write_flo
 gen!(f64 u64 read_float_reg_f64 write_float_reg_f64 read_float_reg_r64 write_float_reg_r64 F64_CNAN);
 
 // https://github.com/rust-lang/rust/issues/48825
-pub(crate) fn f32_is_snan(f: f32) -> bool {
-    let uf: u32 = f.to_bits();
-    let signal_bit = 1 << 22;
-    let signal_bit_clear = (uf & signal_bit) == 0;
-    f32::is_nan(f) && signal_bit_clear
+pub(crate) trait Snan {
+    fn is_snan(self) -> bool;
 }
 
-pub(crate) fn f64_is_snan(f: f64) -> bool {
-    let uf: u64 = f.to_bits();
-    let signal_bit = 1 << 51;
-    let signal_bit_clear = (uf & signal_bit) == 0;
-    f64::is_nan(f) && signal_bit_clear
+impl Snan for f32 {
+    fn is_snan(self) -> bool {
+        let uf = self.to_bits();
+        let signal_bit = 1 << 22;
+        let signal_bit_clear = (uf & signal_bit) == 0;
+        self.is_nan() && signal_bit_clear
+    }
 }
 
-pub(crate) fn nan_box_u32(d: u32) -> u64 {
-    (u64::MAX ^ u32::MAX as u64) | (d as u64)
+impl Snan for f64 {
+    fn is_snan(self) -> bool {
+        let uf = self.to_bits();
+        let signal_bit = 1 << 51;
+        let signal_bit_clear = (uf & signal_bit) == 0;
+        self.is_nan() && signal_bit_clear
+    }
 }
 
-pub(crate) use {cast, set_rm, minmax};
+pub(crate) use {cast, minmax, set_rm};

@@ -1,4 +1,5 @@
 use super::*;
+use float::Snan;
 
 mod atomic;
 mod csr;
@@ -80,37 +81,38 @@ impl<'a> Cpu<'a> {
                     _ => return Err(Exception::IllegalInst),
                 };
 
-                self.write_reg(rd as _, v);
+                self.write_reg(rd as _, v)?;
             }};
-            (i $($t: tt)*) => { exec!(write_reg i $($t)*) };
-            (ifr $($t: tt)*) => { exec!(write_float_reg i $($t)*) };
-            ($wr: tt i [$($f3: tt $exec: expr),* $(,)?]) => {{
+            (i [$($f3: tt $exec: expr),* $(,)?]) => { exec!(ix [$($f3 write_reg $exec),*]) };
+            (ix [$($f3: tt $wr: tt $exec: expr),* $(,)?]) => {{
                 let rs = (inst >> 15) & 0x1f;
                 let rs = self.read_reg(rs as _);
                 let im = (inst as i32 >> 20) as u64;
                 let rd = (inst >> 7) & 0x1f;
 
-                let v = match (inst >> 12) & 7 {
+                match (inst >> 12) & 7 {
                     $(
-                        $f3 => $exec(rs, im)?,
+                        $f3 => {
+                            let v = $exec(rs, im)?;
+                            self.$wr(rd as _, v)?;
+                        },
                     )*
                     _ => return Err(Exception::IllegalInst),
-                };
-
-                self.$wr(rd as _, v);
+                }
             }};
-            (s $($t: tt)*) => { exec!(read_reg s $($t)*) };
-            (sfr $($t: tt)*) => { exec!(read_float_reg s $($t)*) };
-            ($rr: tt s [$($f3: tt $exec: expr),* $(,)?]) => {{
+            (s [$($f3: tt $exec: expr),* $(,)?]) => { exec!(sx [$($f3 read_reg $exec),*]) };
+            (sx [$($f3: tt $m: tt $exec: expr),* $(,)?]) => {{
                 let r1 = (inst >> 15) & 0x1f;
                 let r1 = self.read_reg(r1 as _);
                 let r2 = (inst >> 20) & 0x1f;
-                let r2 = self.$rr(r2 as _);
                 let im = ((inst & 0xfe00_0000) as i32 >> 20) as u64 // [11:5]
                     | ((inst >> 7) & 0x1f) as u64; // [4:0]
                 match (inst >> 12) & 7 {
                     $(
-                        $f3 => $exec(r1, r2, im)?,
+                        $f3 => {
+                            let r2 = self.$m(r2 as _);
+                            $exec(r1, r2, im)?
+                        },
                     )*
                     _ => return Err(Exception::IllegalInst),
                 };
@@ -137,7 +139,7 @@ impl<'a> Cpu<'a> {
                 let im = (inst & 0xFFFF_F000) as i32 as u64;
                 let rd = (inst >> 7) & 0x1f;
                 let v = $exec(im)?;
-                self.write_reg(rd as _, v);
+                self.write_reg(rd as _, v)?;
             }};
             (j $exec: expr) => {{
                 let im = ((inst & 0x8000_0000) as i32 >> 11) as u64 // [20]
@@ -146,7 +148,7 @@ impl<'a> Cpu<'a> {
                     | ((inst >> 20) & 0x7fe) as u64; // [10:1]
                 let rd = (inst >> 7) & 0x1f;
                 let v = $exec(im)?;
-                self.write_reg(rd as _, v);
+                self.write_reg(rd as _, v)?;
             }};
             (p [$($priv: tt $f3: tt $f7: tt $rds: tt $r1s: tt $r2s: tt $exec: expr),* $(,)?]) => {{
                 let r1s = (inst >> 15) & 0x1f;
@@ -170,7 +172,7 @@ impl<'a> Cpu<'a> {
                 };
 
                 if let Some(v) = v {
-                    self.write_reg(rds as _, v);
+                    self.write_reg(rds as _, v)?;
                 }
             }};
             (amo [$($f3: tt $f5: tt $exec: expr),* $(,)?]) => {{
@@ -188,7 +190,7 @@ impl<'a> Cpu<'a> {
                     _ => return Err(Exception::IllegalInst),
                 };
 
-                self.write_reg(rd as _, v);
+                self.write_reg(rd as _, v)?;
             }};
             (_ getrwf f32) => { (Self::read_float_reg_f32, Self::write_float_reg_f32) };
             (_ getrwf f64) => { (Self::read_float_reg_f64, Self::write_float_reg_f64) };
@@ -221,7 +223,7 @@ impl<'a> Cpu<'a> {
                                 $exec(r1, r2)?
                             };
 
-                            w(self, rd as _, v);
+                            w(self, rd as _, v)?;
                         },
                     )*
                     _ => return Err(Exception::IllegalInst),
@@ -244,7 +246,7 @@ impl<'a> Cpu<'a> {
                             let r2 = r(self, r2 as _);
                             let r3 = r(self, r3 as _);
                             let v = float::set_rm!(self rm, || $exec(r1, r2, r3))?;
-                            w(self, rd as _, v);
+                            w(self, rd as _, v)?;
                         },
                     )*
                     _ => return Err(Exception::IllegalInst),
@@ -393,13 +395,13 @@ impl<'a> Cpu<'a> {
                 0x3 0x18 |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a.min(b))?),
                 0x3 0x1c |a, b, aqrl| Ok(self.atomic_mo_u64(a, aqrl, |a| a.max(b))?),
             ]),
-            0x07 => exec!(ifr [
-                0x2 |a, b| Ok(float::nan_box_u32(self.mmu_load_u32(a + b)?)),
-                0x3 |a, b| Ok(self.mmu_load_u64(a + b)?),
+            0x07 => exec!(ix [
+                0x2 write_float_reg_r32 |a, b| Ok(self.mmu_load_u32(a + b)?),
+                0x3 write_float_reg_r64 |a, b| Ok(self.mmu_load_u64(a + b)?),
             ]),
-            0x27 => exec!(sfr [
-                0x2 |a, b, c| self.mmu_store_u32(a + c, b as _),
-                0x3 |a, b, c| self.mmu_store_u64(a + c, b),
+            0x27 => exec!(sx [
+                0x2 read_float_reg_r32 |a, b, c| if self.can_use_fp() { self.mmu_store_u32(a + c, b as _) } else { Ok(()) },
+                0x3 read_float_reg_r64 |a, b, c| if self.can_use_fp() { self.mmu_store_u64(a + c, b) } else { Ok(()) },
             ]),
             0x43 => exec!(r4f [
                 f32 |a, b, c| Ok(self.float_do_op_f32(|| a * b + c)),
@@ -426,14 +428,14 @@ impl<'a> Cpu<'a> {
                 0x10 sr2sr _ 0 |a, b| Ok((a & 0x7fff_ffff) | (b & 0x8000_0000)),
                 0x10 sr2sr _ 1 |a, b: u32| Ok((a & 0x7fff_ffff) | (!b & 0x8000_0000)),
                 0x10 sr2sr _ 2 |a, b| Ok((a & 0x7fff_ffff) | ((a ^ b) & 0x8000_0000)),
-                0x14 f32 _ 0 |a: f32, b| Ok(float::minmax!(f32 f32_is_snan self a b min)),
-                0x14 f32 _ 1 |a: f32, b| Ok(float::minmax!(f32 f32_is_snan self a b max)),
+                0x14 f32 _ 0 |a: f32, b: f32| Ok(float::minmax!(f32 self a b min)),
+                0x14 f32 _ 1 |a: f32, b: f32| Ok(float::minmax!(f32 self a b max)),
                 0x60 f2i 0 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 i32 s) as u64)),
                 0x60 f2i 1 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 u32 u) as i32 as u64)),
                 0x60 f2i 2 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 i64 s) as u64)),
                 0x60 f2i 3 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 u64 u))),
-                0x70 sr2i 0 0 |a, _| Ok(a as u64),
-                0x50 f2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, float::f32_is_snan)),
+                0x70 sr2i 0 0 |a, _| Ok(a as i32 as u64),
+                0x50 f2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, Snan::is_snan)),
                 0x50 f2i _ 1 |a, b| Ok(self.float_cmp(a, b, a < b, f32::is_nan)),
                 0x50 f2i _ 0 |a, b| Ok(self.float_cmp(a, b, a <= b, f32::is_nan)),
                 0x70 f2i 0 1 |a: f32, _| Ok(
@@ -445,8 +447,8 @@ impl<'a> Cpu<'a> {
                     | ((a.is_sign_positive() && a.is_subnormal()) as u64) << 5
                     | ((a.is_sign_positive() && a.is_normal()) as u64) << 6
                     | ((a == f32::INFINITY) as u64) << 7
-                    | (float::f32_is_snan(a) as u64) << 8
-                    | ((!float::f32_is_snan(a) && a.is_nan()) as u64) << 9
+                    | (a.is_snan() as u64) << 8
+                    | ((!a.is_snan() && a.is_nan()) as u64) << 9
                 ),
                 0x68 i2f 0 _ |a, _| Ok(a as i32 as f32),
                 0x68 i2f 1 _ |a, _| Ok(a as u32 as f32),
@@ -462,14 +464,14 @@ impl<'a> Cpu<'a> {
                 0x11 dr2dr _ 0 |a, b| Ok((a & 0x7fff_ffff_ffff_ffff) | (b & 0x8000_0000_0000_0000)),
                 0x11 dr2dr _ 1 |a, b: u64| Ok((a & 0x7fff_ffff_ffff_ffff) | (!b & 0x8000_0000_0000_0000)),
                 0x11 dr2dr _ 2 |a, b| Ok((a & 0x7fff_ffff_ffff_ffff) | ((a ^ b) & 0x8000_0000_0000_0000)),
-                0x15 f64 _ 0 |a: f64, b| Ok(float::minmax!(f64 f64_is_snan self a b min)),
-                0x15 f64 _ 1 |a: f64, b| Ok(float::minmax!(f64 f64_is_snan self a b max)),
+                0x15 f64 _ 0 |a: f64, b: f64| Ok(float::minmax!(f64 self a b min)),
+                0x15 f64 _ 1 |a: f64, b: f64| Ok(float::minmax!(f64 self a b max)),
                 0x61 d2i 0 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 i32 s) as u64)),
                 0x61 d2i 1 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 u32 u) as i32 as u64)),
                 0x61 d2i 2 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 i64 s) as u64)),
                 0x61 d2i 3 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 u64 u))),
                 0x71 dr2i 0 0 |a, _| Ok(a),
-                0x51 d2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, float::f64_is_snan)),
+                0x51 d2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, Snan::is_snan)),
                 0x51 d2i _ 1 |a, b| Ok(self.float_cmp(a, b, a < b, f64::is_nan)),
                 0x51 d2i _ 0 |a, b| Ok(self.float_cmp(a, b, a <= b, f64::is_nan)),
                 0x71 d2i 0 1 |a: f64, _| Ok(
@@ -481,8 +483,8 @@ impl<'a> Cpu<'a> {
                     | ((a.is_sign_positive() && a.is_subnormal()) as u64) << 5
                     | ((a.is_sign_positive() && a.is_normal()) as u64) << 6
                     | ((a == f64::INFINITY) as u64) << 7
-                    | (float::f64_is_snan(a) as u64) << 8
-                    | ((!float::f64_is_snan(a) && a.is_nan()) as u64) << 9
+                    | (a.is_snan() as u64) << 8
+                    | ((!a.is_snan() && a.is_nan()) as u64) << 9
                 ),
                 0x69 i2d 0 _ |a, _| Ok(a as i32 as f64),
                 0x69 i2d 1 _ |a, _| Ok(a as u32 as f64),
@@ -724,8 +726,9 @@ impl<'a> Cpu<'a> {
         if r == 0 { 0 } else { self.regs[r - 1] }
     }
 
-    fn write_reg(&mut self, r: usize, v: u64) {
+    fn write_reg(&mut self, r: usize, v: u64) -> Result<(), Exception> {
         if r != 0 { self.regs[r - 1] = v; }
+        Ok(())
     }
 
     fn write_pc(&mut self, v: u64) -> Result<u64, Exception> {

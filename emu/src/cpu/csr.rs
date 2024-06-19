@@ -55,11 +55,11 @@ pub(crate) const CSR_MTINST: u64 = 0x345;
 pub(crate) const CSR_MTVAL2: u64 = 0x346;
 
 const MSTAT_S_MASK: u64 = 0x8000_0003_000f_e7e2;
-const MSTAT_W_MASK: u64 = 0x7fff_ffc0_fff6_19bf;
+const MSTAT_W_MASK: u64 = 0x7fff_ffc0_fff6_79bf;
 
 impl<'a> Cpu<'a> {
     pub(crate) fn csr_init(&mut self) {
-        self.csrs[CSR_MSTATUS as usize] = 0x0000_000a_0000_0000;
+        self.csrs[CSR_MSTATUS as usize] = 0x0000_000a_0000_2000;
     }
 
     pub(crate) fn csr_read_cpu(&self, a: u64) -> u64 {
@@ -78,8 +78,13 @@ impl<'a> Cpu<'a> {
         Ok(match a {
             // TODO:
             // D | bit 3
-            CSR_MISA => 0x8000000000141121, // rv64ima_su (Z extensions are not in here)
+            CSR_MISA => 0x8000000000141121, // rv64imaf_su (Z extensions are not in here)
             CSR_MHARTID => 0,
+            CSR_MSTATUS => {
+                let mut s = self.csrs[a as usize];
+                s |= (((s >> 13) & 3 == 3) as u64) << 63;
+                s
+            },
             CSR_SSTATUS => self.csr_read_cpu(CSR_MSTATUS) & MSTAT_S_MASK,
             CSR_SATP => {
                 if err && self.mode == Mode::Supervisor && (self.csr_read_cpu(CSR_MSTATUS) >> 20) & 1 == 1 {
@@ -133,7 +138,10 @@ impl<'a> Cpu<'a> {
 
                 self.csrs[a as usize] = d;
             },
-            CSR_FCSR => self.csrs[a as usize] = d & 0xff,
+            CSR_FCSR => {
+                self.mut_fp_state();
+                self.csrs[a as usize] = d & 0xff;
+            },
             CSR_FFLAGS => {
                 let mut fcsr = self.csr_read_cpu(CSR_FCSR);
                 fcsr &= !0x1f;
