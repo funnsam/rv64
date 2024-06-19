@@ -194,8 +194,8 @@ impl<'a> Cpu<'a> {
             }};
             (_ getrwf f32) => { (Self::read_float_reg_f32, Self::write_float_reg_f32) };
             (_ getrwf f64) => { (Self::read_float_reg_f64, Self::write_float_reg_f64) };
-            (_ getrwf sr2i) => { (Self::read_float_reg_r32, Self::write_reg) };
-            (_ getrwf dr2i) => { (Self::read_float_reg_r64, Self::write_reg) };
+            (_ getrwf sru2i) => { (Self::read_float_reg_r32_uc, Self::write_reg) };
+            (_ getrwf dru2i) => { (Self::read_float_reg_r64_uc, Self::write_reg) };
             (_ getrwf f2i) => { (Self::read_float_reg_f32, Self::write_reg) };
             (_ getrwf d2i) => { (Self::read_float_reg_f64, Self::write_reg) };
             (_ getrwf i2sr) => { (Self::read_reg, Self::write_float_reg_r32) };
@@ -204,6 +204,8 @@ impl<'a> Cpu<'a> {
             (_ getrwf i2d) => { (Self::read_reg, Self::write_float_reg_f64) };
             (_ getrwf sr2sr) => { (Self::read_float_reg_r32, Self::write_float_reg_r32) };
             (_ getrwf dr2dr) => { (Self::read_float_reg_r64, Self::write_float_reg_r64) };
+            (_ getrwf f2d) => { (Self::read_float_reg_f32, Self::write_float_reg_f64) };
+            (_ getrwf d2f) => { (Self::read_float_reg_f64, Self::write_float_reg_f32) };
             (fop [$($f7: tt $ty: tt $r2: tt $rm: tt $exec: expr),* $(,)?]) => {{
                 let r1 = (inst >> 15) & 0x1f;
                 let r2 = (inst >> 20) & 0x1f;
@@ -400,8 +402,8 @@ impl<'a> Cpu<'a> {
                 0x3 write_float_reg_r64 |a, b| Ok(self.mmu_load_u64(a + b)?),
             ]),
             0x27 => exec!(sx [
-                0x2 read_float_reg_r32 |a, b, c| if self.can_use_fp() { self.mmu_store_u32(a + c, b as _) } else { Ok(()) },
-                0x3 read_float_reg_r64 |a, b, c| if self.can_use_fp() { self.mmu_store_u64(a + c, b) } else { Ok(()) },
+                0x2 read_float_reg_r32_uc |a, b, c| if self.can_use_fp() { self.mmu_store_u32(a + c, b as _) } else { Ok(()) },
+                0x3 read_float_reg_r64_uc |a, b, c| if self.can_use_fp() { self.mmu_store_u64(a + c, b) } else { Ok(()) },
             ]),
             0x43 => exec!(r4f [
                 f32 |a, b, c| Ok(self.float_do_op_f32(|| a * b + c)),
@@ -434,7 +436,7 @@ impl<'a> Cpu<'a> {
                 0x60 f2i 1 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 u32 u) as i32 as u64)),
                 0x60 f2i 2 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 i64 s) as u64)),
                 0x60 f2i 3 _ |a: f32, _| Ok(self.float_do_op(|s| float::cast!(s a f32 u64 u))),
-                0x70 sr2i 0 0 |a, _| Ok(a as i32 as u64),
+                0x70 sru2i 0 0 |a, _| Ok(a as i32 as u64),
                 0x50 f2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, Snan::is_snan)),
                 0x50 f2i _ 1 |a, b| Ok(self.float_cmp(a, b, a < b, f32::is_nan)),
                 0x50 f2i _ 0 |a, b| Ok(self.float_cmp(a, b, a <= b, f32::is_nan)),
@@ -466,11 +468,13 @@ impl<'a> Cpu<'a> {
                 0x11 dr2dr _ 2 |a, b| Ok((a & 0x7fff_ffff_ffff_ffff) | ((a ^ b) & 0x8000_0000_0000_0000)),
                 0x15 f64 _ 0 |a: f64, b: f64| Ok(float::minmax!(f64 self a b min)),
                 0x15 f64 _ 1 |a: f64, b: f64| Ok(float::minmax!(f64 self a b max)),
+                0x20 d2f 1 _ |a, _| Ok(self.float_do_op_f32(|| a as f32)),
+                0x21 f2d 0 _ |a, _| Ok(self.float_do_op_f64(|| a as f64)),
                 0x61 d2i 0 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 i32 s) as u64)),
                 0x61 d2i 1 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 u32 u) as i32 as u64)),
                 0x61 d2i 2 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 i64 s) as u64)),
                 0x61 d2i 3 _ |a: f64, _| Ok(self.float_do_op(|s| float::cast!(s a f64 u64 u))),
-                0x71 dr2i 0 0 |a, _| Ok(a),
+                0x71 dru2i 0 0 |a, _| Ok(a),
                 0x51 d2i _ 2 |a, b| Ok(self.float_cmp(a, b, a == b, Snan::is_snan)),
                 0x51 d2i _ 1 |a, b| Ok(self.float_cmp(a, b, a < b, f64::is_nan)),
                 0x51 d2i _ 0 |a, b| Ok(self.float_cmp(a, b, a <= b, f64::is_nan)),

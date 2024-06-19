@@ -172,8 +172,12 @@ macro_rules! minmax {
 }
 
 macro_rules! gen {
-    ($t: tt $width: tt $r: tt $w: tt $rr: tt $rw: tt $cnan: tt) => {
+    ($t: tt $width: tt $r: tt $w: tt $rru: tt $rr: tt $rw: tt $cnan: tt) => {
         impl<'a> Cpu<'a> {
+            pub(crate) fn $rru(&self, n: usize) -> $width {
+                self.read_float_reg(n) as $width
+            }
+
             pub(crate) fn $rr(&self, n: usize) -> $width {
                 let r = self.read_float_reg(n);
 
@@ -197,8 +201,8 @@ macro_rules! gen {
     };
 }
 
-gen!(f32 u32 read_float_reg_f32 write_float_reg_f32 read_float_reg_r32 write_float_reg_r32 F32_CNAN);
-gen!(f64 u64 read_float_reg_f64 write_float_reg_f64 read_float_reg_r64 write_float_reg_r64 F64_CNAN);
+gen!(f32 u32 read_float_reg_f32 write_float_reg_f32 read_float_reg_r32_uc read_float_reg_r32 write_float_reg_r32 F32_CNAN);
+gen!(f64 u64 read_float_reg_f64 write_float_reg_f64 read_float_reg_r64_uc read_float_reg_r64 write_float_reg_r64 F64_CNAN);
 
 // https://github.com/rust-lang/rust/issues/48825
 pub(crate) trait Snan {
