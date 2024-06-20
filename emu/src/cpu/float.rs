@@ -11,7 +11,7 @@ pub(crate) const F64_CNAN: u64 = 0x7ff8_0000_0000_0000;
 
 impl<'a> Cpu<'a> {
     pub(crate) fn can_use_fp(&self) -> bool {
-        (self.csr_read_cpu(csr::CSR_MSTATUS) >> 13) & 3 != 0
+        (self.csr_read_cpu(csr::CSR_MSTATUS) >> 13) & 3 == 0
     }
 
     pub(crate) fn mut_fp_state(&mut self) {

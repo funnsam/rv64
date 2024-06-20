@@ -53,7 +53,7 @@ impl<'a> Cpu<'a> {
     }
 
     fn fetch(&mut self) -> Result<u32, Exception> {
-        // println!("{:08x}", self.pc);
+        println!("{:08x}", self.pc);
         if self.pc & 3 == 0 {
             let i = self.mmu_load_xu32(self.pc);
             self.pc += 4;
@@ -284,7 +284,7 @@ impl<'a> Cpu<'a> {
                 0x1 |a, b, c| self.mmu_store_u16(a + c, b as _),
                 0x2 |a, b, c| {
                     if testing && (a + c == 0x80001004 || a + c == 0x80002004) && b == 0 {
-                        std::process::exit(self.bus.load_u32(a + c - 4).unwrap() as i32 - 1);
+                        std::process::exit((self.bus.load_u32(a + c - 4).unwrap() - 1).min(1) as _);
                     } else if testing {
                         println!("{:016x} {}", a + c, b);
                     }
