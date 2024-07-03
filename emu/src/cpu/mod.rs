@@ -8,7 +8,6 @@ mod mmu;
 
 pub struct Cpu<'a> {
     bus: &'a mut bus::Bus<'a>,
-    io: &'a mut io::Io,
 
     regs: [u64; 31],
     float_regs: [u64; 32],
@@ -21,10 +20,9 @@ pub struct Cpu<'a> {
 }
 
 impl<'a> Cpu<'a> {
-    pub fn new(bus: &'a mut bus::Bus<'a>, io: &'a mut io::Io) -> Self {
+    pub fn new(bus: &'a mut bus::Bus<'a>) -> Self {
         let mut cpu = Self {
             bus,
-            io,
 
             regs: [0; 31],
             float_regs: [0; 32],
