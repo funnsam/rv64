@@ -45,7 +45,12 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn check_fpu(&mut self) {
+        core::hint::black_box(Self::_check_fpu)(self);
+    }
+
+    fn _check_fpu(&mut self) {
         unsafe {
             let f = (fenv::fetestexcept(fenv::FE_INVALID as _) != 0) as u64 * NV
                 | (fenv::fetestexcept(fenv::FE_DIVBYZERO as _) != 0) as u64 * DZ
@@ -53,17 +58,18 @@ impl<'a> Cpu<'a> {
                 | (fenv::fetestexcept(fenv::FE_OVERFLOW as _) != 0) as u64 * OF
                 | (fenv::fetestexcept(fenv::FE_UNDERFLOW as _) != 0) as u64 * UF;
             self.float_set_flags(f);
+            println!("{f:02x}");
         }
     }
 
     pub(crate) fn float_do_op<T, F: Fn(&mut Self) -> T>(&mut self, f: F) -> T {
-        unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); }
+        core::hint::black_box(|| unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); })();
         let v = f(self);
         v
     }
 
     pub(crate) fn float_do_op_f32<F: Fn() -> f32>(&mut self, f: F) -> f32 {
-        unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); }
+        core::hint::black_box(|| unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); })();
         let v = f();
         self.check_fpu();
         if v.is_nan() {
@@ -74,7 +80,7 @@ impl<'a> Cpu<'a> {
     }
 
     pub(crate) fn float_do_op_f64<F: Fn() -> f64>(&mut self, f: F) -> f64 {
-        unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); }
+        core::hint::black_box(|| unsafe { fenv::feclearexcept(fenv::FE_ALL_EXCEPT as _); })();
         let v = f();
         self.check_fpu();
         if v.is_nan() {
@@ -117,6 +123,9 @@ macro_rules! cast {
     ($s: tt $v: tt $f: tt $t: tt s) => {{
         let v = if $v.is_nan() { $t::MAX } else { $v as $t };
         $s.check_fpu();
+        if v as $f != $v.trunc() {
+            $s.float_set_flags($crate::cpu::float::NV);
+        }
         v
     }};
     ($s: tt $v: tt $f: tt $t: tt u) => {{
