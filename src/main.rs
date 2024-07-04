@@ -11,8 +11,9 @@ fn main() {
     let args = Args::parse();
 
     let mut ram = std::fs::read(&args.prog).unwrap();
-    ram.resize(0x10000, 0);
-    let mut bus = emu::bus::Bus::new(&mut ram);
+    ram.resize(emu::bus::RAM_SIZE as usize, 0);
+    let ram = emu::ram::Ram::new(&mut ram);
+    let mut bus = emu::bus::Bus::new(ram);
     let mut cpu = emu::cpu::Cpu::new(&mut bus);
 
     loop {

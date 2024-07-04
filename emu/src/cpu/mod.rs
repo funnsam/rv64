@@ -3,6 +3,7 @@ use float::Snan;
 
 mod atomic;
 mod csr;
+mod comp;
 mod float;
 mod mmu;
 
@@ -17,6 +18,9 @@ pub struct Cpu<'a> {
     csrs: Box<[u64; 4096]>,
     pages: mmu::Paging,
     amo_rs: atomic::ReservationSet,
+
+    inst_buffer: u32,
+    inst_len: u64,
 }
 
 impl<'a> Cpu<'a> {
@@ -32,6 +36,9 @@ impl<'a> Cpu<'a> {
             csrs: Box::new([0; 4096]),
             pages: mmu::Paging::Bare,
             amo_rs: atomic::ReservationSet::new(),
+
+            inst_buffer: 0,
+            inst_len: 0,
         };
         cpu.csr_init();
         cpu
@@ -39,7 +46,16 @@ impl<'a> Cpu<'a> {
 
     fn step_w_exception(&mut self, testing: bool) -> Result<(), Exception> {
         let inst = self.fetch()?;
-        self.execute(inst, testing)?;
+        println!("{:08x} {inst:08x}", self.pc);
+        self.pc += self.inst_len;
+
+        if inst & 3 != 3 {
+            let inst = self.comp_expand(inst as u16)?;
+            println!("!!! {inst:08x}");
+            self.execute(inst, testing)?;
+        } else {
+            self.execute(inst, testing)?;
+        }
         self.check_interrupts();
         Ok(())
     }
@@ -51,13 +67,29 @@ impl<'a> Cpu<'a> {
     }
 
     fn fetch(&mut self) -> Result<u32, Exception> {
-        println!("{:08x}", self.pc);
-        if self.pc & 3 == 0 {
-            let i = self.mmu_load_xu32(self.pc);
-            self.pc += 4;
-            i
+        if self.inst_buffer == 0 {
+            self.inst_buffer = self.mmu_load_xu32(self.pc)?;
+        }
+
+        if self.inst_buffer & 3 != 3 {
+            // compressed
+            let inst = self.inst_buffer & 0xffff;
+            self.inst_buffer >>= 16;
+            self.inst_len = 2;
+            Ok(inst)
         } else {
-            Err(Exception::InstAddrMisalign)
+            self.inst_len = 4;
+
+            // not compressed
+            if self.inst_buffer != 0 {
+                let mut inst = self.inst_buffer;
+                self.inst_buffer = self.mmu_load_xu32(self.pc + 2)?;
+                inst |= self.inst_buffer << 16;
+                self.inst_buffer >>= 16;
+                Ok(inst)
+            } else {
+                Ok(core::mem::take(&mut self.inst_buffer))
+            }
         }
     }
 
@@ -127,7 +159,7 @@ impl<'a> Cpu<'a> {
                 match (inst >> 12) & 7 {
                     $(
                         $f3 => if $exec(r1, r2)? {
-                            self.write_pc(self.pc + im - 4)?;
+                            self.write_pc(self.pc + im - self.inst_len)?;
                         },
                     )*
                     _ => return Err(Exception::IllegalInst),
@@ -256,9 +288,9 @@ impl<'a> Cpu<'a> {
 
         match opc {
             0x37 => exec!(u |a| Ok(a)),
-            0x17 => exec!(u |a| Ok(self.pc + a - 4)),
+            0x17 => exec!(u |a| Ok(self.pc + a - self.inst_len)),
             0x6f => exec!(j |a| {
-                self.write_pc(self.pc + a - 4)
+                self.write_pc(self.pc + a - self.inst_len)
             }),
             0x63 => exec!(b [
                 0x0 |a, b| Ok(a == b),
@@ -281,7 +313,7 @@ impl<'a> Cpu<'a> {
                 0x0 |a, b, c| self.mmu_store_u8(a + c, b as _),
                 0x1 |a, b, c| self.mmu_store_u16(a + c, b as _),
                 0x2 |a, b, c| {
-                    if testing && (a + c == 0x80001004 || a + c == 0x80002004) && b == 0 {
+                    if testing && (a + c == 0x80001004 || a + c == 0x80002004 || a + c == 0x80003004) && b == 0 {
                         std::process::exit((self.bus.load_u32(a + c - 4).unwrap() - 1).min(1) as _);
                     } else if testing {
                         println!("{:016x} {}", a + c, b);
@@ -627,7 +659,7 @@ impl<'a> Cpu<'a> {
 
         let cause = match cause {
             Exception::IllegalInst => {
-                let i = self.mmu_load_xu32(epc - 4).unwrap_or(0);
+                let i = self.mmu_load_xu32(epc - self.inst_len).unwrap_or(0);
                 println!("{i:08x}");
                 i as _
             },
@@ -660,14 +692,13 @@ impl<'a> Cpu<'a> {
             1 => (mtvec & !3) + 4 * (cause & 0x7fff_ffff_ffff_ffff),
             _ => unimplemented!(),
         };
-        self.pc = pc;
 
-        // println!("{mtvec:016x} {pc:016x}");
+        _ = self.write_pc(pc);
     }
 
     fn machine_trap(&mut self, cause: u64) {
         self.csr_write_cpu(csr::CSR_MCAUSE, cause);
-        self.csr_write_cpu(csr::CSR_MEPC, self.pc - 4);
+        self.csr_write_cpu(csr::CSR_MEPC, self.pc - self.inst_len);
 
         let mut mstat = self.csr_read_cpu(csr::CSR_MSTATUS);
         mstat &= !0x1880;
@@ -685,7 +716,7 @@ impl<'a> Cpu<'a> {
 
     fn supervisor_trap(&mut self, cause: u64) {
         self.csr_write_cpu(csr::CSR_SCAUSE, cause);
-        self.csr_write_cpu(csr::CSR_SEPC, self.pc - 4);
+        self.csr_write_cpu(csr::CSR_SEPC, self.pc - self.inst_len);
 
         let mut mstat = self.csr_read_cpu(csr::CSR_MSTATUS);
         mstat &= !0x120;
@@ -734,7 +765,8 @@ impl<'a> Cpu<'a> {
     }
 
     fn write_pc(&mut self, v: u64) -> Result<u64, Exception> {
-        if v & 3 == 0 {
+        if v & 1 == 0 {
+            self.inst_buffer = 0;
             Ok(core::mem::replace(&mut self.pc, v))
         } else {
             Err(Exception::InstAddrMisalign)

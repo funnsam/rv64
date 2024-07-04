@@ -76,7 +76,7 @@ impl<'a> Cpu<'a> {
         self.check_csr_perm(a, err)?;
 
         Ok(match a {
-            CSR_MISA => 0x8000000000141125, // rv64imafd_su (Z extensions are not in here)
+            CSR_MISA => 0x8000000000141125, // rv64imafdc_su (Z extensions are not in here)
             CSR_MHARTID => 0,
             CSR_MSTATUS => {
                 let mut s = self.csrs[a as usize];
