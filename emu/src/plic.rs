@@ -11,10 +11,10 @@ pub(crate) struct Plic {
     sclaim: u32,
 }
 
-pub const PLIC_PENDING: u64 = PLIC_BASE + 0x1000;
-pub const PLIC_SENABLE: u64 = PLIC_BASE + 0x2080;
-pub const PLIC_SPRIORITY: u64 = PLIC_BASE + 0x201000;
-pub const PLIC_SCLAIM: u64 = PLIC_BASE + 0x201004;
+const PLIC_PENDING: u64 = PLIC_BASE + 0x1000;
+const PLIC_SENABLE: u64 = PLIC_BASE + 0x2080;
+const PLIC_SPRIORITY: u64 = PLIC_BASE + 0x201000;
+const PLIC_SCLAIM: u64 = PLIC_BASE + 0x201004;
 
 impl Plic {
     pub(crate) fn new() -> Self {
