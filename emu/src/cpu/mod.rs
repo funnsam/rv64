@@ -46,12 +46,12 @@ impl<'a> Cpu<'a> {
 
     fn step_w_exception(&mut self, testing: bool) -> Result<(), Exception> {
         let inst = self.fetch()?;
-        println!("{:08x} {inst:08x}", self.pc);
+        // println!("{:08x} {inst:08x}", self.pc);
         self.pc += self.inst_len;
 
         if inst & 3 != 3 {
             let inst = self.comp_expand(inst as u16)?;
-            println!("!!! {inst:08x}");
+            // println!("!!! {inst:08x}");
             self.execute(inst, testing)?;
         } else {
             self.execute(inst, testing)?;

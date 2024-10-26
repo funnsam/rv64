@@ -4,7 +4,7 @@
 use crate::bus::*;
 use crate::cpu::Exception;
 
-pub(crate) struct Plic {
+pub struct Plic {
     pending: u32,
     senable: u32,
     spriority: u32,
@@ -17,7 +17,7 @@ const PLIC_SPRIORITY: u64 = PLIC_BASE + 0x201000;
 const PLIC_SCLAIM: u64 = PLIC_BASE + 0x201004;
 
 impl Plic {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             pending: 0,
             senable: 0,

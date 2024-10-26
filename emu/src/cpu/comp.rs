@@ -143,8 +143,8 @@ impl Cpu<'_> {
                 let imm = imm as u32;
                 Ok(0x0000006f_u32 | ((imm & 0x7fe) << 20) | ((imm & 0x800) << 9) | (imm & 0xff000) | ((imm & 0x10000) << 11))
             },
-            (1, 6) => decode!(cb |r1, imm| Ok(0x00000063_u32 | (r1 << 15) | ((imm & 0x1e) << 8) | ((imm & 0x7e0) << 24) | ((imm & 0x800) >> 5) | ((imm & 0x1000) << 18))),
-            (1, 7) => decode!(cb |r1, imm| Ok(0x00001063_u32 | (r1 << 15) | ((imm & 0x1e) << 8) | ((imm & 0x7e0) << 24) | ((imm & 0x800) >> 5) | ((imm & 0x1000) << 18))),
+            (1, 6) => decode!(cb |r1, imm| Ok(b(0x00000063_u32, r1, imm))),
+            (1, 7) => decode!(cb |r1, imm| Ok(b(0x00001063_u32, r1, imm))),
             (2, 0) => decode!(ci
                 false rds1 |imm| Ok(0x00001013_u32 | (rds1 << 7) | (rds1 << 15) | ((imm & 0x3f) << 20)),
             ),
@@ -165,4 +165,8 @@ impl Cpu<'_> {
             _ => Err(Exception::IllegalInst),
         }
     }
+}
+
+fn b(base: u32, r1: u32, imm: u32) -> u32 {
+    base | (r1 << 15) | ((imm & 0x1e) << 7) | ((imm & 0x7e0) << 20) | ((imm & 0x800) >> 4) | ((imm & 0x1000) << 19)
 }

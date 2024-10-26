@@ -129,12 +129,14 @@ macro_rules! gen {
     ($t: tt $l: tt $s: tt $r: tt $w: tt) => {
         impl Cpu<'_> {
             pub(crate) fn $r(&mut self, a: u64) -> Result<$t, Exception> {
+                // println!("{} {a:016x}", stringify!($t));
                 self.resolve_paging(a, self.get_perm(PERM_R))
                     .map_err(|_| Exception::LoadPageFault)
                     .and_then(|a| self.bus.$l(a))
             }
 
             pub(crate) fn $w(&mut self, a: u64, d: $t) -> Result<(), Exception> {
+                // println!("{} {a:016x}", stringify!($t));
                 self.resolve_paging(a, self.get_perm(PERM_W))
                     .map_err(|_| Exception::StorePageFault)
                     .and_then(|a| self.bus.$s(a, d))

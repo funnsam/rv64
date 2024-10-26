@@ -14,5 +14,6 @@ int main() {
     uart[0] = 'd';
     uart[0] = '!';
     uart[0] = '\n';
+
     return 0;
 }

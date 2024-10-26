@@ -12,11 +12,42 @@ macro_rules! mmap {
 mmap!(RAM_BASE      RAM_SIZE      RAM_RANGE      0x8000_0000, 32 * 1024 * 1024);
 mmap!(PLIC_BASE     PLIC_SIZE     PLIC_RANGE     0x0c00_0000, 0x0400_0000);
 mmap!(CLINT_BASE    CLINT_SIZE    CLINT_RANGE    0x0200_0000, 0x0001_0000);
+mmap!(UART_BASE     UART_SIZE     UART_RANGE     0x1000_0000, 0x0000_0008);
 
-pub struct Bus<'a> {
-    ram: crate::ram::Ram<'a>,
-    plic: crate::plic::Plic,
-    clint: crate::clint::Clint,
+macro_rules! gen {
+    ($l: tt $s: tt $t: tt $sz: tt $($range:tt $device:ident : $device_ty:ty),*) => {
+        impl Bus<'_> {
+            pub(crate) fn $l(&mut self, addr: u64) -> Result<$t, Exception> {
+                $(if $range.contains(&addr) { return self.$device.$l(addr); })*
+                Err(Exception::LoadAccessFault)
+            }
+
+            pub(crate) fn $s(&mut self, addr: u64, val: $t) -> Result<(), Exception> {
+                $(if $range.contains(&addr) { return self.$device.$s(addr, val); })*
+                Err(Exception::StoreAccessFault)
+            }
+        }
+    };
+}
+
+macro_rules! bus {
+    {$($range:tt $device:ident : $device_ty:ty),* $(,)?} => {
+        pub struct Bus<'a> {
+            $($device: $device_ty),*
+        }
+
+        gen!(load_u8 store_u8 u8 1    $($range $device: $device_ty),*);
+        gen!(load_u16 store_u16 u16 2 $($range $device: $device_ty),*);
+        gen!(load_u32 store_u32 u32 4 $($range $device: $device_ty),*);
+        gen!(load_u64 store_u64 u64 8 $($range $device: $device_ty),*);
+    };
+}
+
+bus! {
+    RAM_RANGE   ram: crate::ram::Ram<'a>,
+    PLIC_RANGE  plic: crate::plic::Plic,
+    CLINT_RANGE clint: crate::clint::Clint,
+    UART_RANGE  uart: crate::uart::Uart,
 }
 
 impl<'a> Bus<'a> {
@@ -25,34 +56,10 @@ impl<'a> Bus<'a> {
             ram,
             plic: crate::plic::Plic::new(),
             clint: crate::clint::Clint::new(),
+            uart: crate::uart::Uart::new(),
         }
     }
 }
-
-macro_rules! gen {
-    ($l: tt $s: tt $t: tt $sz: tt) => {
-        impl Bus<'_> {
-            pub(crate) fn $l(&mut self, addr: u64) -> Result<$t, Exception> {
-                if RAM_RANGE.contains(&addr) { return self.ram.$l(addr); }
-                if PLIC_RANGE.contains(&addr) { return self.plic.$l(addr); }
-                if CLINT_RANGE.contains(&addr) { return self.clint.$l(addr); }
-                Err(Exception::LoadAccessFault)
-            }
-
-            pub(crate) fn $s(&mut self, addr: u64, val: $t) -> Result<(), Exception> {
-                if RAM_RANGE.contains(&addr) { return self.ram.$s(addr, val); }
-                if PLIC_RANGE.contains(&addr) { return self.plic.$s(addr, val); }
-                if CLINT_RANGE.contains(&addr) { return self.clint.$s(addr, val); }
-                Err(Exception::StoreAccessFault)
-            }
-        }
-    };
-}
-
-gen!(load_u8 store_u8 u8 1);
-gen!(load_u16 store_u16 u16 2);
-gen!(load_u32 store_u32 u32 4);
-gen!(load_u64 store_u64 u64 8);
 
 pub(crate) trait Device {
     fn load_u8(&mut self, _addr: u64) -> Result<u8, Exception> { Err(Exception::LoadAccessFault) }

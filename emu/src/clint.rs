@@ -1,7 +1,7 @@
 use crate::bus::*;
 use crate::cpu::Exception;
 
-pub(crate) struct Clint {
+pub struct Clint {
     mtime: u64,
     mtimecmp: u64,
 }
