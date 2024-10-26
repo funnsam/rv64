@@ -1,4 +1,8 @@
-/// 16550(A) UART chip emulation
+//! 16550(A) UART chip emulation
+// TODO:
+// - input
+// - output to anything not just stdout
+// - interrupts
 
 use crate::bus::*;
 use crate::cpu::Exception;
@@ -28,7 +32,7 @@ impl Device for Uart {
 
     fn store_u8(&mut self, addr: u64, val: u8) -> Result<(), Exception> {
         Ok(match addr {
-            THR => print!("{}", val as char), // TODO: output to a stream
+            THR => print!("{}", val as char),
             _ => {},
         })
     }
